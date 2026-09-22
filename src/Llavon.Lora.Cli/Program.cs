@@ -1,13 +1,19 @@
 using System.Globalization;
+using System.Reflection;
+using System.Text.Json;
 using Llavon.Lora;
 
 return ProgramEntry.Run(args);
 
 internal static class ProgramEntry {
+    internal const int TrainerApiVersion = 1;
+
     private const string Help = """
         llavon-lora: token-level LoRA training for Hugging Face Llama checkpoints
 
         Usage:
+          llavon-lora --version [--json]
+
           llavon-lora train --model-config FILE --model FILE_OR_DIR --train-data FILE
               --output-dir DIR --pad-token-id ID --max-seq-length N
               --target-modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj [options]
@@ -54,6 +60,14 @@ internal static class ProgramEntry {
                 return args.Length == 0 ? 2 : 0;
             }
 
+            if (args[0] is "--version" or "version") {
+                if (args.Length > 2 || (args.Length == 2 && args[1] != "--json"))
+                    throw new ArgumentException("usage: llavon-lora --version [--json]");
+
+                WriteVersion(args.Length == 2);
+                return 0;
+            }
+
             var arguments = new Arguments(args[1..]);
             return args[0] switch {
                 "train" => RunTrain(arguments),
@@ -65,6 +79,26 @@ internal static class ProgramEntry {
             Console.Error.WriteLine($"error: {exception.Message}");
             return 2;
         }
+    }
+
+    private static void WriteVersion(bool json) {
+        var assembly = Assembly.GetEntryAssembly() ?? typeof(ProgramEntry).Assembly;
+        var informationalVersion = assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion;
+        var version = string.IsNullOrWhiteSpace(informationalVersion)
+            ? assembly.GetName().Version?.ToString() ?? "0.0.0"
+            : informationalVersion.Split('+', 2)[0];
+
+        if (!json) {
+            Console.WriteLine(version);
+            return;
+        }
+
+        Console.WriteLine(JsonSerializer.Serialize(new {
+            version,
+            trainerApi = TrainerApiVersion
+        }));
     }
 
     private static int RunValidate(Arguments arguments) {

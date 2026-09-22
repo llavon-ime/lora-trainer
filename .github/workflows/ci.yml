@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -24,3 +24,6 @@ jobs:
       - run: dotnet restore Llavon.Lora.slnx --configfile NuGet.Config
       - run: dotnet build Llavon.Lora.slnx -c Release --no-restore
       - run: dotnet test tests/Llavon.Lora.Tests/Llavon.Lora.Tests.csproj -c Release --no-build --no-restore
+      - name: Build Windows web installer
+        if: runner.os == 'Windows'
+        run: dotnet publish src/Llavon.Lora.Installer/Llavon.Lora.Installer.csproj -c Release

@@ -1,0 +1,282 @@
+name: lora-trainer-release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lora-trainer-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Resolve CalVer
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.calver.outputs.version }}
+      tag: ${{ steps.calver.outputs.tag }}
+    steps:
+      - name: Generate Asia/Taipei CalVer
+        id: calver
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(TZ=Asia/Taipei date +'%Y.%m.%d').${GITHUB_RUN_NUMBER}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Release version: $version"
+
+  test:
+    name: Test before release
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+      - run: dotnet restore Llavon.Lora.slnx --configfile NuGet.Config
+      - run: dotnet build Llavon.Lora.slnx -c Release --no-restore -p:Version=${{ needs.version.outputs.version }} -p:InformationalVersion=${{ needs.version.outputs.version }}
+      - run: dotnet test tests/Llavon.Lora.Tests/Llavon.Lora.Tests.csproj -c Release --no-build --no-restore
+
+  publish:
+    name: Publish ${{ matrix.id }}
+    needs: [version, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: win-x64-cpu
+            os: windows-latest
+            rid: win-x64
+            backend: cpu
+            format: zip
+          - id: linux-x64-cpu
+            os: ubuntu-latest
+            rid: linux-x64
+            backend: cpu
+            format: tar.gz
+          - id: osx-arm64-cpu
+            os: macos-latest
+            rid: osx-arm64
+            backend: cpu
+            format: tar.gz
+    runs-on: ${{ matrix.os }}
+    env:
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+      ARTIFACT_ID: ${{ matrix.id }}
+      TARGET_RID: ${{ matrix.rid }}
+      TORCH_BACKEND: ${{ matrix.backend }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet restore src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj \
+            --configfile NuGet.Config \
+            --no-http-cache \
+            -r "$TARGET_RID" \
+            -p:TorchBackend="$TORCH_BACKEND"
+          dotnet publish src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj \
+            -c Release \
+            -r "$TARGET_RID" \
+            --self-contained true \
+            --no-restore \
+            -p:TorchBackend="$TORCH_BACKEND" \
+            -p:Version="$RELEASE_VERSION" \
+            -p:InformationalVersion="$RELEASE_VERSION" \
+            -o "artifacts/publish/$ARTIFACT_ID"
+
+      - name: Add artifact manifest
+        shell: pwsh
+        run: |
+          $manifest = [ordered]@{
+            schema = 1
+            version = $env:RELEASE_VERSION
+            trainerApi = 1
+            commit = '${{ github.sha }}'
+            rid = $env:TARGET_RID
+            backend = $env:TORCH_BACKEND
+          } | ConvertTo-Json
+          [System.IO.File]::WriteAllText(
+            (Join-Path $PWD "artifacts/publish/$env:ARTIFACT_ID/llavon-lora-manifest.json"),
+            $manifest,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Smoke test native artifact
+        if: matrix.id == 'win-x64-cpu' || matrix.id == 'linux-x64-cpu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe="artifacts/publish/$ARTIFACT_ID/llavon-lora"
+          if [[ "$TARGET_RID" == win-* ]]; then exe="$exe.exe"; fi
+          actual="$($exe --version)"
+          test "$actual" = "$RELEASE_VERSION"
+          "$exe" --version --json
+
+      - name: Create ZIP
+        if: matrix.format == 'zip'
+        shell: pwsh
+        run: |
+          $archive = "llavon-lora-$env:RELEASE_VERSION-$env:ARTIFACT_ID.zip"
+          & tar.exe -a -c -f $archive -C "artifacts/publish/$env:ARTIFACT_ID" .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force release | Out-Null
+          Move-Item $archive release/
+
+      - name: Create tarball
+        if: matrix.format == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          archive="llavon-lora-$RELEASE_VERSION-$ARTIFACT_ID.tar.gz"
+          tar -C "artifacts/publish/$ARTIFACT_ID" -czf "release/$archive" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.id }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  installer:
+    name: Publish Windows web installer
+    needs: [version, test]
+    runs-on: windows-latest
+    env:
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+      - name: Publish NativeAOT installer
+        shell: pwsh
+        run: |
+          dotnet publish src/Llavon.Lora.Installer/Llavon.Lora.Installer.csproj `
+            -c Release `
+            -p:Version=$env:RELEASE_VERSION `
+            -p:InformationalVersion=$env:RELEASE_VERSION `
+            -o installer-publish
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item installer-publish/llavon-lora-installer.exe `
+            "release/llavon-lora-installer-$env:RELEASE_VERSION-win-x64.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-installer
+          path: release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish CalVer release
+    needs: [version, publish, installer]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+      RELEASE_TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate latest manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          assets='{}'
+          while IFS= read -r file; do
+            name="$(basename "$file")"
+            platform="${name#llavon-lora-$RELEASE_VERSION-}"
+            platform="${platform%.zip}"
+            platform="${platform%.tar.gz}"
+            sha256="$(sha256sum "$file" | cut -d' ' -f1)"
+            size="$(stat -c '%s' "$file")"
+            assets="$(jq \
+              --arg key "$platform" \
+              --arg name "$name" \
+              --arg url "$repo_url/$name" \
+              --arg sha256 "$sha256" \
+              --argjson size "$size" \
+              '. + {($key): {name: $name, url: $url, sha256: $sha256, size: $size}}' \
+              <<<"$assets")"
+          done < <(find release-assets -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' \) -print | sort)
+
+          installer_file="release-assets/llavon-lora-installer-$RELEASE_VERSION-win-x64.exe"
+          installer_name="$(basename "$installer_file")"
+          installer_sha256="$(sha256sum "$installer_file" | cut -d' ' -f1)"
+          installer_size="$(stat -c '%s' "$installer_file")"
+          installer="$(jq -n \
+            --arg name "$installer_name" \
+            --arg url "$repo_url/$installer_name" \
+            --arg sha256 "$installer_sha256" \
+            --argjson size "$installer_size" \
+            '{name: $name, url: $url, sha256: $sha256, size: $size}')"
+
+          jq -n \
+            --arg version "$RELEASE_VERSION" \
+            --arg commit "$GITHUB_SHA" \
+            --arg publishedAt "$(TZ=Asia/Taipei date +'%Y-%m-%dT%H:%M:%S%:z')" \
+            --argjson installer "$installer" \
+            --argjson assets "$assets" \
+            '{schema: 1, version: $version, trainerApi: 1, commit: $commit, publishedAt: $publishedAt, installer: $installer, assets: $assets}' \
+            > latest.json
+
+      - name: Create immutable release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            target_commit="$(gh release view "$RELEASE_TAG" --json targetCommitish --jq .targetCommitish)"
+            if [[ "$target_commit" != "$GITHUB_SHA" ]]; then
+              echo "$RELEASE_TAG already exists for another commit: $target_commit" >&2
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" release-assets/* latest.json --clobber
+          else
+            gh release create "$RELEASE_TAG" release-assets/* latest.json \
+              --target "$GITHUB_SHA" \
+              --title "Llavon LoRA Trainer $RELEASE_VERSION" \
+              --notes "Automated Asia/Taipei CalVer release from commit $GITHUB_SHA."
+          fi
+
+      - name: Update rolling latest manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          git tag --force latest "$GITHUB_SHA"
+          git push --force origin refs/tags/latest
+          if gh release view latest >/dev/null 2>&1; then
+            gh release delete latest --yes
+          fi
+          gh release create latest latest.json \
+            --title "Latest LoRA Trainer release" \
+            --notes "Points to $RELEASE_TAG."

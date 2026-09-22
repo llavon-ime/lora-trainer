@@ -19,8 +19,9 @@ Its loss semantics match the historical IME training code:
 ## Requirements
 
 - .NET 8 SDK for development;
-- no CUDA Toolkit or NVCC is required to build or publish;
-- the CUDA artifact requires a compatible NVIDIA driver when it runs.
+- automated releases are CPU-only and require neither CUDA nor an NVIDIA driver;
+- an explicit local CUDA publish uses prebuilt NuGet binaries, needs no CUDA
+  Toolkit or NVCC at build time, and requires a compatible NVIDIA driver at runtime.
 
 TorchSharp and prebuilt LibTorch binaries are restored from NuGet. The CLI can
 be published self-contained, so target machines do not need a .NET runtime.
@@ -170,6 +171,25 @@ regression values are:
 
 ## Publish
 
+The release workflow assigns one Asia/Taipei (UTC+8) CalVer to every release in the form
+`YYYY.MM.DD.GITHUB_RUN_NUMBER`. For example, `2026.09.22.37` is release workflow
+run 37 on 2026-09-22. The same version is embedded in every platform artifact
+and can be queried without loading Torch:
+
+```sh
+llavon-lora --version --json
+```
+
+Automated releases publish CPU artifacts for Windows x64, Linux x64, and macOS
+Arm64. The rolling `latest` release contains `latest.json`; its download URLs
+always point to an immutable CalVer release and include SHA-256 and byte-size
+metadata.
+
+The Windows release also contains a small NativeAOT web installer. It compares
+the local `llavon-lora-manifest.json` with an immutable release manifest before
+downloading the selected archive, rejects size or SHA-256 mismatches, and
+replaces the installed trainer only after the new archive has been validated.
+
 CPU, self-contained:
 
 ```sh
@@ -178,7 +198,9 @@ dotnet publish src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj \
   -p:TorchBackend=cpu -o artifacts/linux-x64-cpu
 ```
 
-Windows CUDA, self-contained:
+CUDA is intentionally not included in automated releases: TorchSharp's
+CUDA-enabled LibTorch runtime is several gigabytes and is not a practical
+default download. Developers can still create an explicit local CUDA publish:
 
 ```powershell
 dotnet publish src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj `
