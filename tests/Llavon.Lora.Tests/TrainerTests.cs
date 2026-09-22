@@ -6,14 +6,11 @@ using static TorchSharp.torch;
 
 namespace Llavon.Lora.Tests;
 
-public sealed class TrainerTests
-{
+public sealed class TrainerTests {
     [Fact]
-    public void DatasetLoadsAliasesAndCandidateMasks()
-    {
+    public void DatasetLoadsAliasesAndCandidateMasks() {
         var path = TemporaryPath(".jsonl");
-        try
-        {
+        try {
             File.WriteAllText(path,
                 """
                 {"input_ids":[1,4,3,7,2],"labels":[-100,-100,-100,7,2],"loss_mask":[0,0,0,1,1],"candidate_masks":[null,null,null,[8,7,7],null]}
@@ -23,36 +20,28 @@ public sealed class TrainerTests
             Assert.Equal([7L, 8L], samples[0].CandidateMasks[3]!);
             using var batch = Dataset.MakeBatch(samples, [0], 0);
             Assert.Equal([1L, 5L], batch.Tokens.shape);
-        }
-        finally
-        {
+        } finally {
             File.Delete(path);
         }
     }
 
     [Fact]
-    public void DatasetRejectsInvalidFirstToken()
-    {
+    public void DatasetRejectsInvalidFirstToken() {
         var path = TemporaryPath(".jsonl");
-        try
-        {
+        try {
             File.WriteAllText(path,
                 """
                 {"tokens":[99,2],"labels":[-100,2],"loss_weights":[0,1]}
                 """);
             Assert.Throws<InvalidDataException>(() => Dataset.LoadJsonLines(path, 10, 8));
-        }
-        finally
-        {
+        } finally {
             File.Delete(path);
         }
     }
 
     [Fact]
-    public void CandidateConstrainedLossUsesOnlyProvidedTokens()
-    {
-        using var batch = new TrainingBatch
-        {
+    public void CandidateConstrainedLossUsesOnlyProvidedTokens() {
+        using var batch = new TrainingBatch {
             Tokens = torch.tensor(new long[,] { { 0, 0 } }),
             Labels = torch.tensor(new long[,] { { -100, 1 } }),
             LossWeights = torch.tensor(new float[,] { { 0, 1 } }),
@@ -67,10 +56,8 @@ public sealed class TrainerTests
     }
 
     [Fact]
-    public void CandidateConstrainedLossAddsMissingTarget()
-    {
-        using var batch = new TrainingBatch
-        {
+    public void CandidateConstrainedLossAddsMissingTarget() {
+        using var batch = new TrainingBatch {
             Tokens = torch.tensor(new long[,] { { 0, 0 } }),
             Labels = torch.tensor(new long[,] { { -100, 1 } }),
             LossWeights = torch.tensor(new float[,] { { 0, 1 } }),
@@ -85,41 +72,32 @@ public sealed class TrainerTests
     }
 
     [Fact]
-    public void SafeTensorsRoundTrips()
-    {
+    public void SafeTensorsRoundTrips() {
         var path = TemporaryPath(".safetensors");
         using var source = torch.arange(6, dtype: ScalarType.Float32).view(2, 3);
-        try
-        {
+        try {
             SafeTensors.Save(path, new Dictionary<string, Tensor> { ["weight"] = source });
             var loaded = SafeTensors.LoadModel(path);
-            try
-            {
+            try {
                 Assert.True(loaded.ContainsKey("weight"));
                 Assert.True(torch.allclose(source, loaded["weight"]));
-            }
-            finally
-            {
+            } finally {
                 foreach (var tensor in loaded.Values)
                     tensor.Dispose();
             }
-        }
-        finally
-        {
+        } finally {
             File.Delete(path);
         }
     }
 
     [Fact]
-    public void TinyLlamaTrainsAndWritesPeftAdapter()
-    {
+    public void TinyLlamaTrainsAndWritesPeftAdapter() {
         var root = Path.Combine(Path.GetTempPath(), $"llavon-lora-{Guid.NewGuid():N}");
         var modelDirectory = Path.Combine(root, "model");
         var outputDirectory = Path.Combine(root, "adapter");
         Directory.CreateDirectory(modelDirectory);
         var weights = new Dictionary<string, Tensor>(StringComparer.Ordinal);
-        try
-        {
+        try {
             torch.manual_seed(7);
             weights.Add("model.embed_tokens.weight", torch.randn(8, 4) * 0.02);
             weights.Add("model.layers.0.input_layernorm.weight", torch.ones(4));
@@ -136,8 +114,7 @@ public sealed class TrainerTests
             SafeTensors.Save(Path.Combine(modelDirectory, "model.safetensors"), weights);
 
             var modelConfigPath = Path.Combine(modelDirectory, "config.json");
-            File.WriteAllText(modelConfigPath, JsonSerializer.Serialize(new
-            {
+            File.WriteAllText(modelConfigPath, JsonSerializer.Serialize(new {
                 model_type = "llama",
                 vocab_size = 8,
                 hidden_size = 4,
@@ -160,8 +137,7 @@ public sealed class TrainerTests
                 {"tokens":[1,2,3],"labels":[-100,-100,3],"loss_weights":[0,0,1],"candidate_masks":[null,null,[3,4]]}
                 """);
 
-            Trainer.Train(new TrainConfig
-            {
+            Trainer.Train(new TrainConfig {
                 ModelConfigPath = modelConfigPath,
                 ModelPath = modelDirectory,
                 TrainDataPath = dataPath,
@@ -179,20 +155,15 @@ public sealed class TrainerTests
             Assert.True(File.Exists(Path.Combine(outputDirectory, "adapter_config.json")));
             Assert.True(File.Exists(Path.Combine(outputDirectory, "training_state.json")));
             var adapter = SafeTensors.LoadModel(Path.Combine(outputDirectory, "adapter_model.safetensors"));
-            try
-            {
+            try {
                 Assert.Equal(2, adapter.Count);
                 Assert.Contains("base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight", adapter);
                 Assert.Contains("base_model.model.model.layers.0.self_attn.q_proj.lora_B.weight", adapter);
-            }
-            finally
-            {
+            } finally {
                 foreach (var tensor in adapter.Values)
                     tensor.Dispose();
             }
-        }
-        finally
-        {
+        } finally {
             foreach (var tensor in weights.Values)
                 tensor.Dispose();
             if (Directory.Exists(root))

@@ -6,18 +6,15 @@ using static TorchSharp.torch;
 
 namespace Llavon.Lora;
 
-public static class SafeTensors
-{
+public static class SafeTensors {
     private sealed record TensorHeader(string dtype, long[] shape, long[] data_offsets);
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
+    private static readonly JsonSerializerOptions JsonOptions = new() {
         PropertyNamingPolicy = null,
         WriteIndented = false
     };
 
-    public static Dictionary<string, Tensor> LoadModel(string modelPath)
-    {
+    public static Dictionary<string, Tensor> LoadModel(string modelPath) {
         if (File.Exists(modelPath))
             return LoadFile(modelPath, null);
         if (!Directory.Exists(modelPath))
@@ -37,11 +34,9 @@ public static class SafeTensors
             throw new InvalidDataException($"invalid safetensors shard index: {indexFile}");
 
         var byFile = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
-        foreach (var property in weightMap.EnumerateObject())
-        {
+        foreach (var property in weightMap.EnumerateObject()) {
             var fileName = property.Value.GetString() ?? throw new InvalidDataException("null shard filename");
-            if (!byFile.TryGetValue(fileName, out var names))
-            {
+            if (!byFile.TryGetValue(fileName, out var names)) {
                 names = new HashSet<string>(StringComparer.Ordinal);
                 byFile.Add(fileName, names);
             }
@@ -49,25 +44,20 @@ public static class SafeTensors
         }
 
         var result = new Dictionary<string, Tensor>(StringComparer.Ordinal);
-        try
-        {
-            foreach (var (fileName, names) in byFile)
-            {
+        try {
+            foreach (var (fileName, names) in byFile) {
                 foreach (var (name, tensor) in LoadFile(Path.Combine(modelPath, fileName), names))
                     result.Add(name, tensor);
             }
             return result;
-        }
-        catch
-        {
+        } catch {
             foreach (var tensor in result.Values)
                 tensor.Dispose();
             throw;
         }
     }
 
-    public static void Save(string path, IReadOnlyDictionary<string, Tensor> tensors)
-    {
+    public static void Save(string path, IReadOnlyDictionary<string, Tensor> tensors) {
         if (tensors.Count == 0)
             throw new ArgumentException("refusing to write an empty safetensors file", nameof(tensors));
 
@@ -78,8 +68,7 @@ public static class SafeTensors
         var ordered = tensors.OrderBy(pair => pair.Key, StringComparer.Ordinal).ToArray();
         var header = new Dictionary<string, object>(StringComparer.Ordinal);
         long offset = 0;
-        foreach (var (name, tensor) in ordered)
-        {
+        foreach (var (name, tensor) in ordered) {
             var bytes = checked(tensor.numel() * tensor.element_size());
             header.Add(name, new TensorHeader(FormatDType(tensor.dtype), [.. tensor.shape], [offset, checked(offset + bytes)]));
             offset = checked(offset + bytes);
@@ -97,16 +86,14 @@ public static class SafeTensors
         BinaryPrimitives.WriteUInt64LittleEndian(lengthBytes, checked((ulong)paddedHeader.Length));
         output.Write(lengthBytes);
         output.Write(paddedHeader);
-        foreach (var (_, tensor) in ordered)
-        {
+        foreach (var (_, tensor) in ordered) {
             using var scope = torch.NewDisposeScope();
             using var packed = tensor.detach().cpu().contiguous();
             packed.WriteBytesToStream(output, 1024 * 1024);
         }
     }
 
-    private static Dictionary<string, Tensor> LoadFile(string path, IReadOnlySet<string>? wanted)
-    {
+    private static Dictionary<string, Tensor> LoadFile(string path, IReadOnlySet<string>? wanted) {
         using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         Span<byte> lengthBytes = stackalloc byte[8];
         input.ReadExactly(lengthBytes);
@@ -120,10 +107,8 @@ public static class SafeTensors
         var dataStart = checked(8L + (long)headerLength);
         var tensors = new Dictionary<string, Tensor>(StringComparer.Ordinal);
 
-        try
-        {
-            foreach (var property in metadata.RootElement.EnumerateObject())
-            {
+        try {
+            foreach (var property in metadata.RootElement.EnumerateObject()) {
                 if (property.NameEquals("__metadata__") || wanted is not null && !wanted.Contains(property.Name))
                     continue;
 
@@ -145,30 +130,24 @@ public static class SafeTensors
                     throw new InvalidDataException($"invalid byte range for tensor {property.Name}");
 
                 var tensor = torch.empty(shape, dtype: dtype, device: CPU);
-                try
-                {
+                try {
                     input.Position = checked(dataStart + offsets[0]);
                     tensor.ReadBytesFromStream(input, 1024 * 1024);
                     tensors.Add(property.Name, tensor);
-                }
-                catch
-                {
+                } catch {
                     tensor.Dispose();
                     throw;
                 }
             }
             return tensors;
-        }
-        catch
-        {
+        } catch {
             foreach (var tensor in tensors.Values)
                 tensor.Dispose();
             throw;
         }
     }
 
-    private static (ScalarType Type, long Size) ParseDType(string value) => value switch
-    {
+    private static (ScalarType Type, long Size) ParseDType(string value) => value switch {
         "F32" => (ScalarType.Float32, 4),
         "F16" => (ScalarType.Float16, 2),
         "BF16" => (ScalarType.BFloat16, 2),
@@ -182,8 +161,7 @@ public static class SafeTensors
         _ => throw new InvalidDataException($"unsupported safetensors dtype: {value}")
     };
 
-    private static string FormatDType(ScalarType value) => value switch
-    {
+    private static string FormatDType(ScalarType value) => value switch {
         ScalarType.Float32 => "F32",
         ScalarType.Float16 => "F16",
         ScalarType.BFloat16 => "BF16",

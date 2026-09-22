@@ -3,8 +3,7 @@ using Llavon.Lora;
 
 return ProgramEntry.Run(args);
 
-internal static class ProgramEntry
-{
+internal static class ProgramEntry {
     private const string Help = """
         llavon-lora: token-level LoRA training for Hugging Face Llama checkpoints
 
@@ -34,33 +33,26 @@ internal static class ProgramEntry
           --no-shuffle                     Preserve JSONL order
         """;
 
-    public static int Run(string[] args)
-    {
-        try
-        {
-            if (args.Length == 0 || args[0] is "--help" or "-h")
-            {
+    public static int Run(string[] args) {
+        try {
+            if (args.Length == 0 || args[0] is "--help" or "-h") {
                 Console.WriteLine(Help);
                 return args.Length == 0 ? 2 : 0;
             }
 
             var arguments = new Arguments(args[1..]);
-            return args[0] switch
-            {
+            return args[0] switch {
                 "train" => RunTrain(arguments),
                 "validate" => RunValidate(arguments),
                 _ => throw new ArgumentException($"unknown command: {args[0]}")
             };
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
+        } catch (Exception exception) when (exception is not OutOfMemoryException) {
             Console.Error.WriteLine($"error: {exception.Message}");
             return 2;
         }
     }
 
-    private static int RunValidate(Arguments arguments)
-    {
+    private static int RunValidate(Arguments arguments) {
         arguments.Allow("--train-data", "--vocab-size", "--max-seq-length");
         var samples = Dataset.LoadJsonLines(
             arguments.Required("--train-data"),
@@ -72,8 +64,7 @@ internal static class ProgramEntry
         return 0;
     }
 
-    private static int RunTrain(Arguments arguments)
-    {
+    private static int RunTrain(Arguments arguments) {
         arguments.Allow(
             "--model-config", "--model", "--train-data", "--output-dir", "--target-modules",
             "--pad-token-id", "--max-seq-length", "--rank", "--alpha", "--dropout", "--batch-size",
@@ -84,8 +75,7 @@ internal static class ProgramEntry
         var targets = arguments.Required("--target-modules")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToHashSet(StringComparer.Ordinal);
-        var config = new TrainConfig
-        {
+        var config = new TrainConfig {
             ModelConfigPath = arguments.Required("--model-config"),
             ModelPath = arguments.Required("--model"),
             TrainDataPath = arguments.Required("--train-data"),
@@ -115,20 +105,16 @@ internal static class ProgramEntry
     }
 }
 
-internal sealed class Arguments
-{
+internal sealed class Arguments {
     private readonly Dictionary<string, string> values = new(StringComparer.Ordinal);
     private readonly HashSet<string> flags = new(StringComparer.Ordinal);
 
-    public Arguments(IReadOnlyList<string> args)
-    {
-        for (var index = 0; index < args.Count; ++index)
-        {
+    public Arguments(IReadOnlyList<string> args) {
+        for (var index = 0; index < args.Count; ++index) {
             var key = args[index];
             if (!key.StartsWith("--", StringComparison.Ordinal))
                 throw new ArgumentException($"unexpected positional argument: {key}");
-            if (key == "--no-shuffle")
-            {
+            if (key == "--no-shuffle") {
                 if (!flags.Add(key))
                     throw new ArgumentException($"duplicate option: {key}");
                 continue;
@@ -140,8 +126,7 @@ internal sealed class Arguments
         }
     }
 
-    public void Allow(params string[] names)
-    {
+    public void Allow(params string[] names) {
         var allowed = names.ToHashSet(StringComparer.Ordinal);
         var unknown = values.Keys.Concat(flags).FirstOrDefault(key => !allowed.Contains(key));
         if (unknown is not null)
@@ -154,16 +139,14 @@ internal sealed class Arguments
 
     public string Value(string key, string fallback) => values.GetValueOrDefault(key, fallback);
 
-    public long Integer(string key, long fallback = 0, bool required = false)
-    {
+    public long Integer(string key, long fallback = 0, bool required = false) {
         var text = required ? Required(key) : Value(key, fallback.ToString(CultureInfo.InvariantCulture));
         return long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
             ? value
             : throw new ArgumentException($"invalid integer for {key}: {text}");
     }
 
-    public double Real(string key, double fallback)
-    {
+    public double Real(string key, double fallback) {
         var text = Value(key, fallback.ToString("R", CultureInfo.InvariantCulture));
         return double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) &&
                double.IsFinite(value)

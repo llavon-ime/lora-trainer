@@ -6,8 +6,7 @@ using static TorchSharp.torch.nn;
 
 namespace Llavon.Lora;
 
-public sealed class LoraLinear : Module<Tensor, Tensor>
-{
+public sealed class LoraLinear : Module<Tensor, Tensor> {
     private Tensor weight;
     private Tensor? bias;
     private Parameter? lora_A;
@@ -26,14 +25,12 @@ public sealed class LoraLinear : Module<Tensor, Tensor>
         double alpha,
         double dropout,
         bool enableLora,
-        bool useBias) : base(nameof(LoraLinear))
-    {
+        bool useBias) : base(nameof(LoraLinear)) {
         weight = torch.empty(outputFeatures, inputFeatures, dtype: ScalarType.Float32);
         bias = useBias ? torch.empty(outputFeatures, dtype: ScalarType.Float32) : null;
         IsLoraEnabled = enableLora;
         scaling = enableLora ? alpha / rank : 1;
-        if (enableLora)
-        {
+        if (enableLora) {
             lora_A = Parameter(torch.empty(rank, inputFeatures, dtype: ScalarType.Float32));
             lora_B = Parameter(torch.zeros(outputFeatures, rank, dtype: ScalarType.Float32));
             init.kaiming_uniform_(lora_A, Math.Sqrt(5));
@@ -42,8 +39,7 @@ public sealed class LoraLinear : Module<Tensor, Tensor>
         RegisterComponents();
     }
 
-    public override Tensor forward(Tensor input)
-    {
+    public override Tensor forward(Tensor input) {
         var output = functional.linear(input, weight, bias);
         if (!IsLoraEnabled)
             return output;
@@ -56,15 +52,13 @@ public sealed class LoraLinear : Module<Tensor, Tensor>
 
     public void SetBaseWeight(Tensor value) => CopyTensor(weight, value, "linear weight");
 
-    public void SetBaseBias(Tensor value)
-    {
+    public void SetBaseBias(Tensor value) {
         if (bias is null)
             throw new InvalidOperationException("linear layer has no bias");
         CopyTensor(bias, value, "linear bias");
     }
 
-    internal static void CopyTensor(Tensor destination, Tensor source, string name)
-    {
+    internal static void CopyTensor(Tensor destination, Tensor source, string name) {
         if (!destination.shape.SequenceEqual(source.shape))
             throw new InvalidDataException($"shape mismatch for {name}: " +
                                            $"expected [{string.Join(',', destination.shape)}], " +
@@ -75,22 +69,19 @@ public sealed class LoraLinear : Module<Tensor, Tensor>
     }
 }
 
-internal sealed class RmsNorm : Module<Tensor, Tensor>
-{
+internal sealed class RmsNorm : Module<Tensor, Tensor> {
     private Tensor weight;
     private readonly double epsilon;
 
     public Tensor Weight => weight;
 
-    public RmsNorm(long hiddenSize, double epsilon) : base(nameof(RmsNorm))
-    {
+    public RmsNorm(long hiddenSize, double epsilon) : base(nameof(RmsNorm)) {
         weight = torch.ones(hiddenSize, dtype: ScalarType.Float32);
         this.epsilon = epsilon;
         RegisterComponents();
     }
 
-    public override Tensor forward(Tensor input)
-    {
+    public override Tensor forward(Tensor input) {
         var inputType = input.dtype;
         var value = input.to_type(ScalarType.Float32);
         var variance = value.square().mean([-1], keepdim: true);
@@ -99,8 +90,7 @@ internal sealed class RmsNorm : Module<Tensor, Tensor>
     }
 }
 
-internal sealed class LlamaAttention : Module<Tensor, Tensor, Tensor, Tensor>
-{
+internal sealed class LlamaAttention : Module<Tensor, Tensor, Tensor, Tensor> {
     public LoraLinear q_proj;
     public LoraLinear k_proj;
     public LoraLinear v_proj;
@@ -111,8 +101,7 @@ internal sealed class LlamaAttention : Module<Tensor, Tensor, Tensor, Tensor>
     private readonly double ropeTheta;
 
     public LlamaAttention(ModelConfig config, long rank, double alpha, double dropout, IReadOnlySet<string> targets)
-        : base(nameof(LlamaAttention))
-    {
+        : base(nameof(LlamaAttention)) {
         heads = config.NumAttentionHeads;
         keyValueHeads = config.NumKeyValueHeads;
         headDimension = config.HeadDim;
@@ -128,8 +117,7 @@ internal sealed class LlamaAttention : Module<Tensor, Tensor, Tensor, Tensor>
         RegisterComponents();
     }
 
-    public override Tensor forward(Tensor hidden, Tensor attentionMask, Tensor positions)
-    {
+    public override Tensor forward(Tensor hidden, Tensor attentionMask, Tensor positions) {
         var batch = hidden.shape[0];
         var sequence = hidden.shape[1];
         var query = q_proj.call(hidden).view(batch, sequence, heads, headDimension).transpose(1, 2);
@@ -138,8 +126,7 @@ internal sealed class LlamaAttention : Module<Tensor, Tensor, Tensor, Tensor>
         (query, key) = ApplyRotary(query, key, positions);
 
         var groups = heads / keyValueHeads;
-        if (groups != 1)
-        {
+        if (groups != 1) {
             key = key.repeat_interleave(groups, 1);
             value = value.repeat_interleave(groups, 1);
         }
@@ -158,8 +145,7 @@ internal sealed class LlamaAttention : Module<Tensor, Tensor, Tensor, Tensor>
         return o_proj.call(output);
     }
 
-    private (Tensor Query, Tensor Key) ApplyRotary(Tensor query, Tensor key, Tensor positions)
-    {
+    private (Tensor Query, Tensor Key) ApplyRotary(Tensor query, Tensor key, Tensor positions) {
         var half = headDimension / 2;
         var exponents = torch.arange(half, dtype: ScalarType.Float32, device: query.device);
         var inverseFrequency = (-Math.Log(ropeTheta) * exponents / half).exp();
@@ -167,8 +153,7 @@ internal sealed class LlamaAttention : Module<Tensor, Tensor, Tensor, Tensor>
         var cosine = frequencies.cos().unsqueeze(1).to_type(query.dtype);
         var sine = frequencies.sin().unsqueeze(1).to_type(query.dtype);
 
-        Tensor Rotate(Tensor input)
-        {
+        Tensor Rotate(Tensor input) {
             var first = input.slice(-1, 0, half, 1);
             var second = input.slice(-1, half, half * 2, 1);
             return torch.cat([first * cosine - second * sine, second * cosine + first * sine], -1);
@@ -178,15 +163,13 @@ internal sealed class LlamaAttention : Module<Tensor, Tensor, Tensor, Tensor>
     }
 }
 
-internal sealed class LlamaMlp : Module<Tensor, Tensor>
-{
+internal sealed class LlamaMlp : Module<Tensor, Tensor> {
     public LoraLinear gate_proj;
     public LoraLinear up_proj;
     public LoraLinear down_proj;
 
     public LlamaMlp(ModelConfig config, long rank, double alpha, double dropout, IReadOnlySet<string> targets)
-        : base(nameof(LlamaMlp))
-    {
+        : base(nameof(LlamaMlp)) {
         gate_proj = new LoraLinear(config.HiddenSize, config.IntermediateSize, rank, alpha, dropout,
             targets.Contains("gate_proj"), config.MlpBias);
         up_proj = new LoraLinear(config.HiddenSize, config.IntermediateSize, rank, alpha, dropout,
@@ -200,8 +183,7 @@ internal sealed class LlamaMlp : Module<Tensor, Tensor>
         down_proj.call(gate_proj.call(input).silu() * up_proj.call(input));
 }
 
-internal sealed class LlamaDecoderLayer : Module<Tensor, Tensor, Tensor, Tensor>
-{
+internal sealed class LlamaDecoderLayer : Module<Tensor, Tensor, Tensor, Tensor> {
     public LlamaAttention self_attn;
     public LlamaMlp mlp;
     public RmsNorm input_layernorm;
@@ -212,8 +194,7 @@ internal sealed class LlamaDecoderLayer : Module<Tensor, Tensor, Tensor, Tensor>
         long rank,
         double alpha,
         double dropout,
-        IReadOnlySet<string> targets) : base(nameof(LlamaDecoderLayer))
-    {
+        IReadOnlySet<string> targets) : base(nameof(LlamaDecoderLayer)) {
         self_attn = new LlamaAttention(config, rank, alpha, dropout, targets);
         mlp = new LlamaMlp(config, rank, alpha, dropout, targets);
         input_layernorm = new RmsNorm(config.HiddenSize, config.RmsNormEpsilon);
@@ -221,15 +202,13 @@ internal sealed class LlamaDecoderLayer : Module<Tensor, Tensor, Tensor, Tensor>
         RegisterComponents();
     }
 
-    public override Tensor forward(Tensor input, Tensor attentionMask, Tensor positions)
-    {
+    public override Tensor forward(Tensor input, Tensor attentionMask, Tensor positions) {
         var hidden = input + self_attn.call(input_layernorm.call(input), attentionMask, positions);
         return hidden + mlp.call(post_attention_layernorm.call(hidden));
     }
 }
 
-public sealed class LlamaForCausalLm : Module<Tensor, Tensor, Tensor>
-{
+public sealed class LlamaForCausalLm : Module<Tensor, Tensor, Tensor> {
     private Embedding embed_tokens;
     private ModuleList<LlamaDecoderLayer> layers;
     private RmsNorm norm;
@@ -247,8 +226,7 @@ public sealed class LlamaForCausalLm : Module<Tensor, Tensor, Tensor>
         long rank,
         double alpha,
         double dropout,
-        IReadOnlySet<string> targetModules) : base(nameof(LlamaForCausalLm))
-    {
+        IReadOnlySet<string> targetModules) : base(nameof(LlamaForCausalLm)) {
         this.config = config;
         this.rank = rank;
         this.alpha = alpha;
@@ -264,8 +242,7 @@ public sealed class LlamaForCausalLm : Module<Tensor, Tensor, Tensor>
         RegisterComponents();
     }
 
-    public override Tensor forward(Tensor inputIds, Tensor attentionMask)
-    {
+    public override Tensor forward(Tensor inputIds, Tensor attentionMask) {
         var hidden = embed_tokens.call(inputIds);
         var positions = attentionMask.to_type(ScalarType.Int64).cumsum(-1) - 1;
         positions.clamp_min_(0);
@@ -274,15 +251,12 @@ public sealed class LlamaForCausalLm : Module<Tensor, Tensor, Tensor>
         return lm_head.call(norm.call(hidden));
     }
 
-    public void LoadBaseWeights(string modelPath)
-    {
+    public void LoadBaseWeights(string modelPath) {
         var tensors = SafeTensors.LoadModel(modelPath);
-        try
-        {
+        try {
             LoraLinear.CopyTensor(embed_tokens.weight!, Require(tensors, "model.embed_tokens.weight"),
                 "model.embed_tokens.weight");
-            for (var index = 0; index < layers.Count; ++index)
-            {
+            for (var index = 0; index < layers.Count; ++index) {
                 var layer = layers[index];
                 var prefix = $"model.layers.{index}";
                 LoraLinear.CopyTensor(layer.input_layernorm.Weight,
@@ -303,9 +277,7 @@ public sealed class LlamaForCausalLm : Module<Tensor, Tensor, Tensor>
                 ? Require(tensors, "model.embed_tokens.weight")
                 : Require(tensors, "lm_head.weight");
             lm_head.SetBaseWeight(headWeight);
-        }
-        finally
-        {
+        } finally {
             foreach (var tensor in tensors.Values)
                 tensor.Dispose();
         }
@@ -313,11 +285,9 @@ public sealed class LlamaForCausalLm : Module<Tensor, Tensor, Tensor>
 
     public Parameter[] TrainableParameters() => parameters().Where(parameter => parameter.requires_grad).ToArray();
 
-    public void SavePeftAdapter(string outputDirectory, string baseModel)
-    {
+    public void SavePeftAdapter(string outputDirectory, string baseModel) {
         var adapter = new Dictionary<string, Tensor>(StringComparer.Ordinal);
-        for (var index = 0; index < layers.Count; ++index)
-        {
+        for (var index = 0; index < layers.Count; ++index) {
             var layer = layers[index];
             var prefix = $"base_model.model.model.layers.{index}";
             AddAdapter(adapter, $"{prefix}.self_attn.q_proj", layer.self_attn.q_proj);
@@ -331,8 +301,7 @@ public sealed class LlamaForCausalLm : Module<Tensor, Tensor, Tensor>
 
         Directory.CreateDirectory(outputDirectory);
         SafeTensors.Save(Path.Combine(outputDirectory, "adapter_model.safetensors"), adapter);
-        var metadata = new
-        {
+        var metadata = new {
             base_model_name_or_path = baseModel,
             bias = "none",
             fan_in_fan_out = false,
@@ -355,15 +324,13 @@ public sealed class LlamaForCausalLm : Module<Tensor, Tensor, Tensor>
             ? tensor
             : throw new InvalidDataException($"base checkpoint is missing tensor: {name}");
 
-    private static void LoadLinear(IReadOnlyDictionary<string, Tensor> tensors, string prefix, LoraLinear linear)
-    {
+    private static void LoadLinear(IReadOnlyDictionary<string, Tensor> tensors, string prefix, LoraLinear linear) {
         linear.SetBaseWeight(Require(tensors, $"{prefix}.weight"));
         if (tensors.TryGetValue($"{prefix}.bias", out var bias))
             linear.SetBaseBias(bias);
     }
 
-    private static void AddAdapter(IDictionary<string, Tensor> adapter, string prefix, LoraLinear linear)
-    {
+    private static void AddAdapter(IDictionary<string, Tensor> adapter, string prefix, LoraLinear linear) {
         if (!linear.IsLoraEnabled)
             return;
         adapter.Add($"{prefix}.lora_A.weight", linear.LoraA);

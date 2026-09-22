@@ -12,16 +12,14 @@ public sealed record TrainingSample(
     bool[] AttentionMask,
     IReadOnlyList<long[]?> CandidateMasks);
 
-public sealed class TrainingBatch : IDisposable
-{
+public sealed class TrainingBatch : IDisposable {
     public required Tensor Tokens { get; init; }
     public required Tensor Labels { get; init; }
     public required Tensor LossWeights { get; init; }
     public required Tensor AttentionMask { get; init; }
     public required IReadOnlyList<IReadOnlyList<long[]?>> CandidateMasks { get; init; }
 
-    public void Dispose()
-    {
+    public void Dispose() {
         Tokens.Dispose();
         Labels.Dispose();
         LossWeights.Dispose();
@@ -29,29 +27,23 @@ public sealed class TrainingBatch : IDisposable
     }
 }
 
-public static class Dataset
-{
+public static class Dataset {
     public static IReadOnlyList<TrainingSample> LoadJsonLines(
         string path,
         long vocabularySize,
-        long maximumSequenceLength)
-    {
+        long maximumSequenceLength) {
         var samples = new List<TrainingSample>();
         using var reader = new StreamReader(path);
         var lineNumber = 0;
-        while (reader.ReadLine() is { } line)
-        {
+        while (reader.ReadLine() is { } line) {
             ++lineNumber;
             if (string.IsNullOrWhiteSpace(line))
                 continue;
 
-            try
-            {
+            try {
                 using var document = JsonDocument.Parse(line);
                 samples.Add(ParseSample(document.RootElement, lineNumber, vocabularySize, maximumSequenceLength));
-            }
-            catch (JsonException exception)
-            {
+            } catch (JsonException exception) {
                 throw new InvalidDataException($"invalid JSON on line {lineNumber}: {exception.Message}", exception);
             }
         }
@@ -64,8 +56,7 @@ public static class Dataset
     public static TrainingBatch MakeBatch(
         IReadOnlyList<TrainingSample> samples,
         IReadOnlyList<int> indices,
-        long padTokenId)
-    {
+        long padTokenId) {
         if (indices.Count == 0)
             throw new ArgumentException("cannot create an empty batch", nameof(indices));
 
@@ -76,12 +67,10 @@ public static class Dataset
         var attention = new bool[indices.Count, sequenceLength];
         var candidateMasks = new List<IReadOnlyList<long[]?>>(indices.Count);
 
-        for (var row = 0; row < indices.Count; ++row)
-        {
+        for (var row = 0; row < indices.Count; ++row) {
             var sample = samples[indices[row]];
             var masks = new long[]?[sequenceLength];
-            for (var position = 0; position < sequenceLength; ++position)
-            {
+            for (var position = 0; position < sequenceLength; ++position) {
                 tokens[row, position] = padTokenId;
                 labels[row, position] = -100;
                 if (position >= sample.Tokens.Length)
@@ -95,8 +84,7 @@ public static class Dataset
             candidateMasks.Add(masks);
         }
 
-        return new TrainingBatch
-        {
+        return new TrainingBatch {
             Tokens = torch.tensor(tokens, dtype: ScalarType.Int64),
             Labels = torch.tensor(labels, dtype: ScalarType.Int64),
             LossWeights = torch.tensor(weights, dtype: ScalarType.Float32),
@@ -109,8 +97,7 @@ public static class Dataset
         JsonElement row,
         int lineNumber,
         long vocabularySize,
-        long maximumSequenceLength)
-    {
+        long maximumSequenceLength) {
         var tokens = row.TryGetProperty("tokens", out var tokensElement)
             ? ReadLongArray(tokensElement, lineNumber, "tokens")
             : row.TryGetProperty("input_ids", out tokensElement)
@@ -138,16 +125,13 @@ public static class Dataset
         RequireLength(attention.Length, tokens.Length, lineNumber, "attention_mask");
 
         var candidateMasks = new long[]?[tokens.Length];
-        if (row.TryGetProperty("candidate_masks", out var masksElement))
-        {
+        if (row.TryGetProperty("candidate_masks", out var masksElement)) {
             if (masksElement.ValueKind != JsonValueKind.Array)
                 throw Error(lineNumber, "'candidate_masks' must be an array");
             RequireLength(masksElement.GetArrayLength(), tokens.Length, lineNumber, "candidate_masks");
             var position = 0;
-            foreach (var maskElement in masksElement.EnumerateArray())
-            {
-                if (maskElement.ValueKind == JsonValueKind.Null)
-                {
+            foreach (var maskElement in masksElement.EnumerateArray()) {
+                if (maskElement.ValueKind == JsonValueKind.Null) {
                     ++position;
                     continue;
                 }
@@ -164,8 +148,7 @@ public static class Dataset
         }
 
         var hasLoss = false;
-        for (var position = 0; position < tokens.Length; ++position)
-        {
+        for (var position = 0; position < tokens.Length; ++position) {
             if (tokens[position] < 0 || tokens[position] >= vocabularySize ||
                 labels[position] != -100 && (labels[position] < 0 || labels[position] >= vocabularySize))
                 throw Error(lineNumber, "token or label is outside vocabulary");
@@ -180,30 +163,26 @@ public static class Dataset
             : throw Error(lineNumber, "has no trainable position");
     }
 
-    private static long[] ReadLongArray(JsonElement element, int line, string name)
-    {
+    private static long[] ReadLongArray(JsonElement element, int line, string name) {
         if (element.ValueKind != JsonValueKind.Array)
             throw Error(line, $"'{name}' must be an array");
         return element.EnumerateArray().Select(value => value.GetInt64()).ToArray();
     }
 
-    private static float[] ReadFloatArray(JsonElement element, int line, string name)
-    {
+    private static float[] ReadFloatArray(JsonElement element, int line, string name) {
         if (element.ValueKind != JsonValueKind.Array)
             throw Error(line, $"'{name}' must be an array");
         return element.EnumerateArray().Select(value => value.GetSingle()).ToArray();
     }
 
-    private static bool[] ReadAttentionMask(JsonElement element, int line)
-    {
+    private static bool[] ReadAttentionMask(JsonElement element, int line) {
         var values = ReadLongArray(element, line, "attention_mask");
         if (values.Any(value => value is not (0 or 1)))
             throw Error(line, "attention_mask values must be 0 or 1");
         return values.Select(value => value == 1).ToArray();
     }
 
-    private static void RequireLength(int actual, int expected, int line, string name)
-    {
+    private static void RequireLength(int actual, int expected, int line, string name) {
         if (actual != expected)
             throw Error(line, $"'{name}' length {actual.ToString(CultureInfo.InvariantCulture)} " +
                               $"does not match tokens length {expected.ToString(CultureInfo.InvariantCulture)}");

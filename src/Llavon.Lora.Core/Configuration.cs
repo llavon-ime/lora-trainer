@@ -16,10 +16,8 @@ public sealed record ModelConfig(
     bool AttentionBias,
     bool MlpBias,
     bool TieWordEmbeddings,
-    string HiddenActivation)
-{
-    public static ModelConfig Load(string path)
-    {
+    string HiddenActivation) {
+    public static ModelConfig Load(string path) {
         using var document = JsonDocument.Parse(File.ReadAllBytes(path));
         var root = document.RootElement;
 
@@ -79,8 +77,7 @@ public sealed record ModelConfig(
         return config;
     }
 
-    private void Validate()
-    {
+    private void Validate() {
         if (!string.Equals(HiddenActivation, "silu", StringComparison.Ordinal))
             throw new InvalidDataException("only hidden_act='silu' is supported");
         if (VocabSize <= 0 || HiddenSize <= 0 || IntermediateSize <= 0 || NumHiddenLayers <= 0 ||
@@ -96,8 +93,7 @@ public sealed record ModelConfig(
     }
 }
 
-public sealed record TrainConfig
-{
+public sealed record TrainConfig {
     public required string ModelConfigPath { get; init; }
     public required string ModelPath { get; init; }
     public required string TrainDataPath { get; init; }
@@ -122,8 +118,7 @@ public sealed record TrainConfig
     public string Device { get; init; } = "auto";
     public string DType { get; init; } = "float32";
 
-    public void Validate(ModelConfig model)
-    {
+    public void Validate(ModelConfig model) {
         var supported = new HashSet<string>(StringComparer.Ordinal) {
             "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"
         };
