@@ -208,6 +208,9 @@ public sealed class TrainerTests {
                 """
                 {"tokens":[1,2,3],"labels":[-100,-100,3],"loss_weights":[0,0,1],"candidate_masks":[null,null,[3,4]]}
                 """);
+            var vocabularyPath = Path.Combine(root, "ime_vocab.json");
+            File.WriteAllText(vocabularyPath,
+                """{"tokens":["<PAD>","<BOS>","<EOS>","<SEP>","<UNK>","<SP>","<LATIN>","test"],"special_tokens":["<PAD>","<BOS>","<EOS>","<SEP>","<UNK>","<SP>","<LATIN>"]}""");
 
             Trainer.Train(new TrainConfig {
                 ModelConfigPath = modelConfigPath,
@@ -238,6 +241,20 @@ public sealed class TrainerTests {
                 foreach (var tensor in adapter.Values)
                     tensor.Dispose();
             }
+
+            var ggufPath = Path.Combine(root, "model-with-adapter-f32.gguf");
+            var export = GgufExporter.Export(new GgufExportConfig {
+                ModelConfigPath = modelConfigPath,
+                ModelPath = modelDirectory,
+                VocabularyPath = vocabularyPath,
+                AdapterDirectory = outputDirectory,
+                OutputPath = ggufPath,
+                OutputType = GgufOutputType.Float32
+            });
+            var ggufHeader = File.ReadAllBytes(ggufPath)[..8];
+            Assert.Equal(new byte[] { (byte)'G', (byte)'G', (byte)'U', (byte)'F' }, ggufHeader[..4]);
+            Assert.Equal(3, BitConverter.ToInt32(ggufHeader, 4));
+            Assert.Equal(64, export.OutputSha256.Length);
         } finally {
             foreach (var tensor in weights.Values)
                 tensor.Dispose();

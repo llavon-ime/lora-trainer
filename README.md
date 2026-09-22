@@ -139,6 +139,35 @@ Output consists of `adapter_model.safetensors`, `adapter_config.json`, and
 `training_state.json`. Adapter names and configuration follow PEFT's Llama LoRA
 convention. Base weights stay frozen and are not copied into the adapter.
 
+## Export GGUF
+
+`export-gguf` converts the Hugging Face checkpoint and optionally merges a PEFT
+LoRA adapter. The exporter and quantizer both run inside the CLI process: it
+does not invoke Python, `llama-quantize`, or any other executable. GGUF writing
+is implemented in `Llavon.Lora.Core`; Q4_K_M and other llama.cpp quantization
+types use the pinned `LLamaSharp.Backend.Cpu` NuGet package.
+
+The complete vocabulary remains caller-owned and is required through
+`--vocab-file`; no vocabulary or IME table is compiled into the library.
+
+```powershell
+llavon-lora export-gguf `
+  --model-config model/config.json `
+  --model model/model.safetensors `
+  --vocab-file ime_vocab.json `
+  --adapter output/ime-lora `
+  --outfile output/ime-lora-f16.gguf `
+  --quantize Q4_K_M `
+  --quantized-outfile output/ime-lora-Q4_K_M.gguf
+```
+
+Use `--expected-outfile-sha256` and `--expected-quantized-sha256` in release
+automation to fail if conversion changes unexpectedly. The deployed base-model
+regression values are:
+
+- F16: `788e435fb4f7a07a826baf499127b5c91d8c4d3df6f4fea17b4c9379878f20f6`
+- Q4_K_M: `e0205904a65b735ed735b709d5e1502ebbe31fbd1393042573af9843d39e2ab8`
+
 ## Publish
 
 CPU, self-contained:

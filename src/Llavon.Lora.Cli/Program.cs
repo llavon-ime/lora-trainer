@@ -14,6 +14,10 @@ internal static class ProgramEntry {
 
           llavon-lora validate --train-data FILE --vocab-size N --max-seq-length N
 
+          llavon-lora export-gguf --model-config FILE --model FILE_OR_DIR --vocab-file FILE
+              --outfile FILE [--adapter DIR] [--outtype f16|f32]
+              [--quantize TYPE --quantized-outfile FILE] [options]
+
         Training options:
           --rank N                         LoRA rank (default: 16)
           --alpha X                        LoRA alpha (default: 32)
@@ -31,6 +35,16 @@ internal static class ProgramEntry {
           --dtype float32|bfloat16         Model compute dtype (default: float32)
           --seed N                         RNG seed (default: 42)
           --no-shuffle                     Preserve JSONL order
+
+        GGUF export options:
+          --adapter DIR                    Optional PEFT LoRA adapter to merge
+          --outtype f16|f32                Unquantized GGUF type (default: f16)
+          --quantize TYPE                  In-process llama.cpp quantization, e.g. Q4_K_M
+          --quantized-outfile FILE         Quantized GGUF output
+          --quantization-threads N         Quantizer threads; 0 uses its default
+          --expected-outfile-sha256 HASH   Reject an unexpected unquantized artifact
+          --expected-quantized-sha256 HASH Reject an unexpected quantized artifact
+          --force                          Overwrite existing output files
         """;
 
     public static int Run(string[] args) {
@@ -44,6 +58,7 @@ internal static class ProgramEntry {
             return args[0] switch {
                 "train" => RunTrain(arguments),
                 "validate" => RunValidate(arguments),
+                "export-gguf" => RunExportGguf(arguments),
                 _ => throw new ArgumentException($"unknown command: {args[0]}")
             };
         } catch (Exception exception) when (exception is not OutOfMemoryException) {
@@ -104,6 +119,37 @@ internal static class ProgramEntry {
         return 0;
     }
 
+    private static int RunExportGguf(Arguments arguments) {
+        arguments.Allow(
+            "--model-config", "--model", "--vocab-file", "--adapter", "--outfile", "--outtype",
+            "--quantize", "--quantized-outfile", "--quantization-threads",
+            "--expected-outfile-sha256", "--expected-quantized-sha256", "--force");
+        var outputType = arguments.Value("--outtype", "f16") switch {
+            "f16" => GgufOutputType.Float16,
+            "f32" => GgufOutputType.Float32,
+            var value => throw new ArgumentException($"invalid --outtype: {value}")
+        };
+        var config = new GgufExportConfig {
+            ModelConfigPath = arguments.Required("--model-config"),
+            ModelPath = arguments.Required("--model"),
+            VocabularyPath = arguments.Required("--vocab-file"),
+            AdapterDirectory = arguments.Optional("--adapter"),
+            OutputPath = arguments.Required("--outfile"),
+            OutputType = outputType,
+            QuantizationType = arguments.Optional("--quantize"),
+            QuantizedOutputPath = arguments.Optional("--quantized-outfile"),
+            QuantizationThreads = checked((int)arguments.Integer("--quantization-threads", 0)),
+            ExpectedOutputSha256 = arguments.Optional("--expected-outfile-sha256"),
+            ExpectedQuantizedSha256 = arguments.Optional("--expected-quantized-sha256"),
+            Overwrite = arguments.Flag("--force")
+        };
+        var result = GgufExporter.Export(config);
+        Console.WriteLine($"wrote={result.OutputPath} sha256={result.OutputSha256}");
+        if (result.QuantizedOutputPath is not null)
+            Console.WriteLine($"wrote={result.QuantizedOutputPath} sha256={result.QuantizedOutputSha256}");
+        return 0;
+    }
+
 }
 
 internal sealed class Arguments {
@@ -115,7 +161,7 @@ internal sealed class Arguments {
             var key = args[index];
             if (!key.StartsWith("--", StringComparison.Ordinal))
                 throw new ArgumentException($"unexpected positional argument: {key}");
-            if (key == "--no-shuffle") {
+            if (key is "--no-shuffle" or "--force") {
                 if (!flags.Add(key))
                     throw new ArgumentException($"duplicate option: {key}");
                 continue;
