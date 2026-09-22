@@ -3,7 +3,6 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Microsoft.Win32;
 
 return await InstallerProgram.RunAsync(args);
 
@@ -11,7 +10,6 @@ internal static class InstallerProgram {
     private const string DefaultManifestUrl =
         "https://github.com/llavon-ime/lora-trainer/releases/download/latest/latest.json";
     private const string DefaultAsset = "win-x64-cpu";
-    private const string RegistryPath = @"Software\Llavon IME\LoRA Trainer";
 
     private static readonly HttpClient Http = CreateHttpClient();
 
@@ -63,11 +61,7 @@ internal static class InstallerProgram {
         var state = GetState(local, remote, options.InstallDirectory);
         WriteStatus(state, local?.Version, remote.Version);
 
-        if (state is InstallState.Current or InstallState.Newer) {
-            if (local is not null)
-                WriteRegistry(local.Version, local.TrainerApi, options.InstallDirectory);
-            return 0;
-        }
+        if (state is InstallState.Current or InstallState.Newer) return 0;
 
         if (!remote.Assets.TryGetValue(options.Asset, out var asset))
             throw new InvalidDataException($"release has no asset named {options.Asset}");
@@ -97,7 +91,6 @@ internal static class InstallerProgram {
                 throw new InvalidDataException("artifact has no llavon-lora.exe");
 
             ReplaceDirectory(options.InstallDirectory, stagingPath, backupPath);
-            WriteRegistry(remote.Version, remote.TrainerApi, options.InstallDirectory);
             WriteStatus(InstallState.Current, remote.Version, remote.Version);
             return 0;
         } finally {
@@ -110,8 +103,6 @@ internal static class InstallerProgram {
     private static int Uninstall(Options options) {
         if (Directory.Exists(options.InstallDirectory))
             Directory.Delete(options.InstallDirectory, recursive: true);
-        using var key = Registry.LocalMachine.OpenSubKey(@"Software\Llavon IME", writable: true);
-        key?.DeleteSubKeyTree("LoRA Trainer", throwOnMissingSubKey: false);
         return 0;
     }
 
@@ -211,14 +202,6 @@ internal static class InstallerProgram {
             throw;
         }
         if (movedExisting) TryDeleteDirectory(backup);
-    }
-
-    private static void WriteRegistry(string version, int trainerApi, string installDirectory) {
-        using var key = Registry.LocalMachine.CreateSubKey(RegistryPath, writable: true)
-            ?? throw new InvalidOperationException("unable to create trainer registry key");
-        key.SetValue("Version", version, RegistryValueKind.String);
-        key.SetValue("TrainerApi", trainerApi, RegistryValueKind.DWord);
-        key.SetValue("InstallPath", installDirectory, RegistryValueKind.String);
     }
 
     private static void WriteStatus(InstallState state, string? local, string remote) {
