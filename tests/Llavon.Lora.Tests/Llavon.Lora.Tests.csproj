@@ -19,4 +19,8 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
   </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Llavon.Lora.Integration\ImeRuntimeTables.cs" Link="ImeRuntimeTables.cs" />
+  </ItemGroup>
 </Project>

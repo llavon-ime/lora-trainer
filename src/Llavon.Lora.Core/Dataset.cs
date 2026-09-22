@@ -154,8 +154,14 @@ public static class Dataset {
                 throw Error(lineNumber, "token or label is outside vocabulary");
             if (!float.IsFinite(weights[position]) || weights[position] < 0)
                 throw Error(lineNumber, "loss weights must be finite and non-negative");
-            if (position > 0 && attention[position] && labels[position] != -100 && weights[position] > 0)
+            if (position > 0 && attention[position] && labels[position] != -100 && weights[position] > 0) {
+                if (candidateMasks[position] is { } candidates &&
+                    Array.BinarySearch(candidates, labels[position]) < 0)
+                    throw Error(
+                        lineNumber,
+                        $"target label {labels[position]} at position {position} is missing from its candidate mask");
                 hasLoss = true;
+            }
         }
 
         return hasLoss

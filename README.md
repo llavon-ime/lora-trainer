@@ -13,7 +13,7 @@ Its loss semantics match the historical IME training code:
 - `loss_weights[p] == 0` excludes position `p` from loss;
 - `candidate_masks[p]` restricts cross entropy at position `p` to supplied
   token IDs;
-- a target absent from its candidate mask is included for that loss calculation;
+- a target absent from its candidate mask is rejected during JSONL validation;
 - loss is the weighted mean across trainable positions.
 
 ## Requirements
@@ -70,6 +70,37 @@ dotnet run --project src/Llavon.Lora.Cli -c Release -- validate \
 
 Validation reads only numeric JSONL and does not load a model.
 
+## IME integration test
+
+The production CLI deliberately does not tokenize text or load IME tables. It
+accepts only complete numeric token, label, weight, attention, and candidate-mask
+arrays. The `tests/Llavon.Lora.Integration` executable contains the `ime-core`
+compatibility tokenizer used to prepare the public validation fixture and to
+measure the base model and trained adapter. It is test-only code and is not
+included in the CLI or Core assemblies.
+
+The table files must match the model checkpoint. The current public
+`tony65535/llavon-ime-llama-250m` checkpoint uses the `ime-core` tables from
+commit `00e3042`; later tables contain token IDs outside its vocabulary.
+
+Run the test-only CUDA fixture directly when the model, validation data, and
+matching tables are available locally:
+
+```powershell
+dotnet run --project tests/Llavon.Lora.Integration `
+  -c Release -p:TorchBackend=cuda-windows -- `
+  --model-config artifacts/integration/config.json `
+  --model artifacts/integration/model.safetensors `
+  --vocab-file artifacts/integration/ime_vocab.json `
+  --tables-dir artifacts/integration/ime-core-00e3042/table `
+  --validation-data artifacts/integration/validation.jsonl `
+  --work-dir artifacts/integration/lora-run `
+  --max-steps 42 --learning-rate 0.0001
+```
+
+This fixture trains on the validation rows themselves, so its post-training
+score verifies the end-to-end LoRA path but is not a generalization metric.
+
 ## Train
 
 The base model must be an unquantized Hugging Face Llama checkpoint in one
@@ -100,6 +131,9 @@ llavon-lora train \
 `--target-modules` is required and is never inferred from a built-in table.
 Supported projections are `q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`,
 `up_proj`, and `down_proj`.
+
+The learning rate is constant after the optional linear warmup. `--max-steps`
+only stops training; it does not create a cosine decay cycle.
 
 Output consists of `adapter_model.safetensors`, `adapter_config.json`, and
 `training_state.json`. Adapter names and configuration follow PEFT's Llama LoRA
@@ -138,6 +172,10 @@ dotnet publish src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj `
 
 Native AOT and trimming are intentionally disabled because TorchSharp does not
 currently guarantee compatibility with either mode.
+
+Float16 training is rejected until FP32 optimizer master weights or proper AMP
+are implemented. Float16 remains appropriate for the test-only inference pass;
+use float32 or bfloat16 for training.
 
 ## Library use
 

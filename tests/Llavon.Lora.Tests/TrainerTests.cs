@@ -1,4 +1,5 @@
 using Llavon.Lora;
+using Llavon.Lora.Integration;
 using System.Text.Json;
 using TorchSharp;
 using Xunit;
@@ -7,6 +8,36 @@ using static TorchSharp.torch;
 namespace Llavon.Lora.Tests;
 
 public sealed class TrainerTests {
+    [Fact]
+    public void ImeRuntimeTablesMatchImeCoreTokenizationRules() {
+        var root = Path.Combine(Path.GetTempPath(), $"llavon-ime-tables-{Guid.NewGuid():N}");
+        var tokenDirectory = Path.Combine(root, "tokens");
+        Directory.CreateDirectory(tokenDirectory);
+        try {
+            File.WriteAllText(Path.Combine(tokenDirectory, "chars.json"),
+                """{"你":9,"妳":10,"好":11}""");
+            File.WriteAllText(Path.Combine(tokenDirectory, "latin.json"),
+                """{"python":12}""");
+            File.WriteAllText(Path.Combine(tokenDirectory, "special_tokens.json"),
+                """{"<PAD>":0,"<BOS>":1,"<EOS>":2,"<SEP>":3,"<UNK>":4,"<SP>":5,"<LATIN>":6}""");
+            File.WriteAllText(Path.Combine(tokenDirectory, "bpmf.json"),
+                """{"<ㄋㄧˇ>":13}""");
+            File.WriteAllText(Path.Combine(root, "bopomofo_char.json"),
+                """{"ㄋㄧˇ":["你","妳"]}""");
+            var vocabularyPath = Path.Combine(root, "ime_vocab.json");
+            File.WriteAllText(vocabularyPath,
+                """{"tokens":["<PAD>","<BOS>","<EOS>","<SEP>","<UNK>","<SP>","<LATIN>","x","y","你","妳","好","<LATIN:python>","<ㄋㄧˇ>"]}""");
+
+            var tables = ImeRuntimeTables.Load(root);
+
+            tables.ValidateVocabulary(vocabularyPath, 14);
+            Assert.Equal([1L, 12L, 5L, 11L, 13L, 3L], tables.TokenizePrompt("??Python 好", ["ㄋㄧˇ"]));
+            Assert.Equal([(9L, "你"), (10L, "妳")], tables.CandidateTokens("ㄋㄧˇ"));
+        } finally {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact]
     public void DatasetLoadsAliasesAndCandidateMasks() {
         var path = TemporaryPath(".jsonl");
@@ -56,19 +87,60 @@ public sealed class TrainerTests {
     }
 
     [Fact]
-    public void CandidateConstrainedLossAddsMissingTarget() {
+    public void CandidateConstrainedLossBatchesDifferentCandidateWidthsAndFullVocabularyRows() {
         using var batch = new TrainingBatch {
-            Tokens = torch.tensor(new long[,] { { 0, 0 } }),
-            Labels = torch.tensor(new long[,] { { -100, 1 } }),
-            LossWeights = torch.tensor(new float[,] { { 0, 1 } }),
-            AttentionMask = torch.tensor(new bool[,] { { true, true } }),
-            CandidateMasks = new List<IReadOnlyList<long[]?>> { new long[]?[] { null, [2] } }
+            Tokens = torch.tensor(new long[,] { { 0, 0, 0 }, { 0, 0, 0 } }),
+            Labels = torch.tensor(new long[,] { { -100, 1, 3 }, { -100, 2, -100 } }),
+            LossWeights = torch.tensor(new float[,] { { 0, 1, 2 }, { 0, 3, 0 } }),
+            AttentionMask = torch.tensor(new bool[,] { { true, true, true }, { true, true, false } }),
+            CandidateMasks = new List<IReadOnlyList<long[]?>> {
+                new long[]?[] { null, [1, 2], null },
+                new long[]?[] { null, [0, 2, 3], [0] }
+            }
         };
-        using var logits = torch.zeros(1, 2, 4, dtype: ScalarType.Float32);
+        using var logits = torch.zeros(2, 3, 4, dtype: ScalarType.Float32);
         logits[0, 0, 1] = 2;
         logits[0, 0, 2] = 1;
+        logits[1, 0, 2] = 1;
+
         using var loss = Trainer.CandidateConstrainedLoss(logits, batch);
-        Assert.Equal(0.3132617, loss.item<float>(), 5);
+
+        var expected = (0.3132616875 + 2 * Math.Log(4) + 3 * (Math.Log(Math.E + 2) - 1)) / 6;
+        Assert.Equal(expected, loss.item<float>(), 5);
+    }
+
+    [Fact]
+    public void DatasetRejectsCandidateMaskWithoutTarget() {
+        var path = TemporaryPath(".jsonl");
+        try {
+            File.WriteAllText(path,
+                """
+                {"tokens":[0,0],"labels":[-100,1],"loss_weights":[0,1],"candidate_masks":[null,[2]]}
+                """);
+            var error = Assert.Throws<InvalidDataException>(() => Dataset.LoadJsonLines(path, 4, 8));
+            Assert.Contains("target label 1 at position 1", error.Message);
+        } finally {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void TrainingRejectsFloat16WithoutMasterWeights() {
+        var config = new TrainConfig {
+            ModelConfigPath = "config.json",
+            ModelPath = "model.safetensors",
+            TrainDataPath = "training.jsonl",
+            OutputDirectory = "adapter",
+            TargetModules = new HashSet<string> { "q_proj" },
+            PadTokenId = 0,
+            MaxSequenceLength = 8,
+            DType = "float16"
+        };
+        var model = new ModelConfig(10, 8, 16, 1, 2, 2, 4, 8, 1e-5, 10000, false, false, false, "silu");
+
+        var error = Assert.Throws<ArgumentException>(() => config.Validate(model));
+
+        Assert.Contains("master weights", error.Message);
     }
 
     [Fact]
@@ -154,6 +226,9 @@ public sealed class TrainerTests {
 
             Assert.True(File.Exists(Path.Combine(outputDirectory, "adapter_config.json")));
             Assert.True(File.Exists(Path.Combine(outputDirectory, "training_state.json")));
+            using (var state = JsonDocument.Parse(
+                       File.ReadAllBytes(Path.Combine(outputDirectory, "training_state.json"))))
+                Assert.Equal(2e-4, state.RootElement.GetProperty("learning_rate").GetDouble());
             var adapter = SafeTensors.LoadModel(Path.Combine(outputDirectory, "adapter_model.safetensors"));
             try {
                 Assert.Equal(2, adapter.Count);

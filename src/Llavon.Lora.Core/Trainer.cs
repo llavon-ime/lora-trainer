@@ -12,38 +12,148 @@ public static class Trainer {
             throw new ArgumentException("invalid logits or batch rank");
         if (logits.shape[0] != batch.Labels.shape[0] || logits.shape[1] != batch.Labels.shape[1])
             throw new ArgumentException("logits and labels shapes do not match");
+        if (batch.AttentionMask.shape[0] != logits.shape[0] || batch.AttentionMask.shape[1] != logits.shape[1] ||
+            batch.LossWeights.shape[0] != logits.shape[0] || batch.LossWeights.shape[1] != logits.shape[1] ||
+            batch.CandidateMasks.Count != logits.shape[0] ||
+            batch.CandidateMasks.Any(row => row.Count != logits.shape[1]))
+            throw new ArgumentException("batch fields do not have matching shapes");
 
-        var weightedLosses = new List<Tensor>();
-        double totalWeight = 0;
-        for (var row = 0L; row < batch.Labels.shape[0]; ++row) {
-            for (var position = 1L; position < batch.Labels.shape[1]; ++position) {
-                var label = batch.Labels[row, position].item<long>();
-                var weight = batch.LossWeights[row, position].item<float>();
-                var attended = batch.AttentionMask[row, position].item<bool>();
-                if (!attended || label == -100 || weight <= 0)
-                    continue;
-                if (label < 0 || label >= logits.shape[2])
-                    throw new ArgumentException("label is outside logits vocabulary");
+        var shiftedLength = logits.shape[1] - 1;
+        if (shiftedLength <= 0)
+            return logits.sum() * 0;
 
-                var positionLogits = logits[row, position - 1].to_type(ScalarType.Float32);
-                Tensor tokenLoss;
-                var candidate = batch.CandidateMasks[(int)row][(int)position];
-                if (candidate is not null) {
-                    var ids = candidate.Contains(label) ? candidate : [.. candidate, label];
-                    var index = torch.tensor(ids, dtype: ScalarType.Int64, device: positionLogits.device);
-                    var selected = positionLogits.index_select(0, index);
-                    tokenLoss = torch.logsumexp(selected, 0) - positionLogits[label];
+        var vocabularySize = logits.shape[2];
+        var candidateRows = new List<long>();
+        var candidateLists = new List<long[]>();
+        var fullVocabularyRows = new List<long>();
+        for (var row = 0; row < batch.CandidateMasks.Count; ++row) {
+            for (var position = 1; position < batch.CandidateMasks[row].Count; ++position) {
+                var flatRow = row * shiftedLength + position - 1;
+                var candidates = batch.CandidateMasks[row][position];
+                if (candidates is null) {
+                    fullVocabularyRows.Add(flatRow);
                 } else {
-                    tokenLoss = torch.logsumexp(positionLogits, 0) - positionLogits[label];
+                    candidateRows.Add(flatRow);
+                    candidateLists.Add(candidates);
                 }
-                weightedLosses.Add(tokenLoss * weight);
-                totalWeight += weight;
             }
         }
 
-        return weightedLosses.Count == 0 || totalWeight <= 0
+        var flatLogits = logits.narrow(1, 0, shiftedLength).reshape(-1, vocabularySize);
+        var flatLabels = batch.Labels.narrow(1, 1, shiftedLength).reshape(-1).to(logits.device);
+        var flatWeights = batch.LossWeights.narrow(1, 1, shiftedLength).reshape(-1)
+            .to(logits.device).to_type(ScalarType.Float32);
+        var flatAttention = batch.AttentionMask.narrow(1, 1, shiftedLength).reshape(-1).to(logits.device);
+        var numerators = new List<Tensor>(2);
+        var denominators = new List<Tensor>(2);
+
+        AddCandidateLoss(
+            flatLogits,
+            flatLabels,
+            flatWeights,
+            flatAttention,
+            candidateRows,
+            candidateLists,
+            vocabularySize,
+            numerators,
+            denominators);
+        AddFullVocabularyLoss(
+            flatLogits,
+            flatLabels,
+            flatWeights,
+            flatAttention,
+            fullVocabularyRows,
+            numerators,
+            denominators);
+
+        return numerators.Count == 0
             ? logits.sum() * 0
-            : torch.stack(weightedLosses).sum() / totalWeight;
+            : torch.stack(numerators).sum() / torch.stack(denominators).sum();
+    }
+
+    private static void AddCandidateLoss(
+        Tensor flatLogits,
+        Tensor flatLabels,
+        Tensor flatWeights,
+        Tensor flatAttention,
+        IReadOnlyList<long> rows,
+        IReadOnlyList<long[]> candidateLists,
+        long vocabularySize,
+        ICollection<Tensor> numerators,
+        ICollection<Tensor> denominators) {
+        if (rows.Count == 0)
+            return;
+
+        var maximumCandidates = candidateLists.Max(candidates => candidates.Length);
+        var candidateIds = new long[rows.Count, maximumCandidates];
+        var padding = new bool[rows.Count, maximumCandidates];
+        for (var row = 0; row < candidateLists.Count; ++row) {
+            var candidates = candidateLists[row];
+            for (var column = 0; column < candidates.Length; ++column)
+                candidateIds[row, column] = candidates[column];
+            for (var column = candidates.Length; column < maximumCandidates; ++column)
+                padding[row, column] = true;
+        }
+
+        var rowIndices = torch.tensor(rows.ToArray(), dtype: ScalarType.Int64, device: flatLogits.device);
+        var labels = flatLabels.index_select(0, rowIndices);
+        var weights = flatWeights.index_select(0, rowIndices);
+        var attention = flatAttention.index_select(0, rowIndices);
+        var valid = labels.ne(-100).logical_and(weights.gt(0)).logical_and(attention);
+        var validIndices = valid.nonzero().flatten();
+        if (validIndices.numel() == 0)
+            return;
+
+        var validRows = rowIndices.index_select(0, validIndices);
+        var validLabels = labels.index_select(0, validIndices);
+        var validWeights = weights.index_select(0, validIndices);
+        var ids = torch.tensor(candidateIds, dtype: ScalarType.Int64, device: flatLogits.device)
+            .index_select(0, validIndices);
+        var paddingMask = torch.tensor(padding, dtype: ScalarType.Bool, device: flatLogits.device)
+            .index_select(0, validIndices);
+        var linearIndices = validRows.unsqueeze(1) * vocabularySize + ids;
+        var selectedLogits = flatLogits.reshape(-1)
+            .index_select(0, linearIndices.reshape(-1))
+            .reshape(validRows.shape[0], maximumCandidates)
+            .to_type(ScalarType.Float32)
+            .masked_fill(paddingMask, float.NegativeInfinity);
+        var targetIndices = validRows * vocabularySize + validLabels;
+        var targetLogits = flatLogits.reshape(-1).index_select(0, targetIndices).to_type(ScalarType.Float32);
+        var losses = selectedLogits.logsumexp(1) - targetLogits;
+
+        numerators.Add((losses * validWeights).sum());
+        denominators.Add(validWeights.sum());
+    }
+
+    private static void AddFullVocabularyLoss(
+        Tensor flatLogits,
+        Tensor flatLabels,
+        Tensor flatWeights,
+        Tensor flatAttention,
+        IReadOnlyList<long> rows,
+        ICollection<Tensor> numerators,
+        ICollection<Tensor> denominators) {
+        if (rows.Count == 0)
+            return;
+
+        var rowIndices = torch.tensor(rows.ToArray(), dtype: ScalarType.Int64, device: flatLogits.device);
+        var labels = flatLabels.index_select(0, rowIndices);
+        var weights = flatWeights.index_select(0, rowIndices);
+        var attention = flatAttention.index_select(0, rowIndices);
+        var valid = labels.ne(-100).logical_and(weights.gt(0)).logical_and(attention);
+        var validIndices = valid.nonzero().flatten();
+        if (validIndices.numel() == 0)
+            return;
+
+        var validRows = rowIndices.index_select(0, validIndices);
+        var validLabels = labels.index_select(0, validIndices);
+        var validWeights = weights.index_select(0, validIndices);
+        var selectedLogits = flatLogits.index_select(0, validRows).to_type(ScalarType.Float32);
+        var targetLogits = selectedLogits.gather(1, validLabels.unsqueeze(1)).squeeze(1);
+        var losses = selectedLogits.logsumexp(1) - targetLogits;
+
+        numerators.Add((losses * validWeights).sum());
+        denominators.Add(validWeights.sum());
     }
 
     public static void Train(TrainConfig config) {
@@ -115,7 +225,7 @@ public static class Trainer {
                 if (accumulated < config.GradientAccumulationSteps && !epochEnd)
                     continue;
 
-                var learningRate = ScheduledLearningRate(config, globalStep, totalSteps);
+                var learningRate = ScheduledLearningRate(config, globalStep);
                 foreach (var group in optimizer.ParamGroups)
                     group.LearningRate = learningRate;
                 if (config.MaxGradientNorm > 0)
@@ -141,7 +251,7 @@ public static class Trainer {
         }
 
         model.SavePeftAdapter(config.OutputDirectory, config.ModelPath);
-        var finalLearningRate = ScheduledLearningRate(config, Math.Max(0, globalStep - 1), totalSteps);
+        var finalLearningRate = ScheduledLearningRate(config, Math.Max(0, globalStep - 1));
         WriteTrainingState(config.OutputDirectory, globalStep, lastMeanLoss, finalLearningRate);
         Console.WriteLine($"adapter saved to {config.OutputDirectory}");
     }
@@ -162,12 +272,10 @@ public static class Trainer {
         _ => throw new ArgumentException($"unknown dtype: {name}")
     };
 
-    private static double ScheduledLearningRate(TrainConfig config, long step, long totalSteps) {
+    private static double ScheduledLearningRate(TrainConfig config, long step) {
         if (step < config.WarmupSteps && config.WarmupSteps > 0)
             return config.LearningRate * (step + 1d) / config.WarmupSteps;
-        var decaySteps = Math.Max(1, totalSteps - config.WarmupSteps);
-        var progress = Math.Clamp((double)(step - config.WarmupSteps) / decaySteps, 0, 1);
-        return config.LearningRate * 0.5 * (1 + Math.Cos(Math.PI * progress));
+        return config.LearningRate;
     }
 
     private static void WriteTrainingState(string outputDirectory, long step, double loss, double learningRate) {

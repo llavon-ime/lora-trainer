@@ -28,7 +28,7 @@ internal static class ProgramEntry {
           --max-grad-norm X                Gradient clipping; 0 disables it (default: 1)
           --save-every N                   Adapter checkpoint interval; 0 disables it
           --device auto|cpu|cuda           Training device (default: auto)
-          --dtype float32|float16|bfloat16 Model compute dtype (default: float32)
+          --dtype float32|bfloat16         Model compute dtype (default: float32)
           --seed N                         RNG seed (default: 42)
           --no-shuffle                     Preserve JSONL order
         """;
@@ -103,6 +103,7 @@ internal static class ProgramEntry {
         Trainer.Train(config);
         return 0;
     }
+
 }
 
 internal sealed class Arguments {
@@ -138,6 +139,8 @@ internal sealed class Arguments {
         : throw new ArgumentException($"missing required option: {key}");
 
     public string Value(string key, string fallback) => values.GetValueOrDefault(key, fallback);
+
+    public string? Optional(string key) => values.GetValueOrDefault(key);
 
     public long Integer(string key, long fallback = 0, bool required = false) {
         var text = required ? Required(key) : Value(key, fallback.ToString(CultureInfo.InvariantCulture));

@@ -283,6 +283,34 @@ public sealed class LlamaForCausalLm : Module<Tensor, Tensor, Tensor> {
         }
     }
 
+    public void LoadPeftAdapter(string adapterDirectory) {
+        var adapterConfig = AdapterConfig.Load(adapterDirectory);
+        if (adapterConfig.Rank != rank || adapterConfig.Alpha != alpha || adapterConfig.Dropout != dropout ||
+            !adapterConfig.TargetModules.SetEquals(targetModules))
+            throw new InvalidDataException("adapter configuration does not match the model's LoRA configuration");
+
+        var path = Path.Combine(adapterDirectory, "adapter_model.safetensors");
+        if (!File.Exists(path))
+            throw new FileNotFoundException("adapter directory has no adapter_model.safetensors", path);
+        var tensors = SafeTensors.LoadModel(path);
+        try {
+            for (var index = 0; index < layers.Count; ++index) {
+                var layer = layers[index];
+                var prefix = $"base_model.model.model.layers.{index}";
+                LoadAdapter(tensors, $"{prefix}.self_attn.q_proj", layer.self_attn.q_proj);
+                LoadAdapter(tensors, $"{prefix}.self_attn.k_proj", layer.self_attn.k_proj);
+                LoadAdapter(tensors, $"{prefix}.self_attn.v_proj", layer.self_attn.v_proj);
+                LoadAdapter(tensors, $"{prefix}.self_attn.o_proj", layer.self_attn.o_proj);
+                LoadAdapter(tensors, $"{prefix}.mlp.gate_proj", layer.mlp.gate_proj);
+                LoadAdapter(tensors, $"{prefix}.mlp.up_proj", layer.mlp.up_proj);
+                LoadAdapter(tensors, $"{prefix}.mlp.down_proj", layer.mlp.down_proj);
+            }
+        } finally {
+            foreach (var tensor in tensors.Values)
+                tensor.Dispose();
+        }
+    }
+
     public Parameter[] TrainableParameters() => parameters().Where(parameter => parameter.requires_grad).ToArray();
 
     public void SavePeftAdapter(string outputDirectory, string baseModel) {
@@ -335,5 +363,17 @@ public sealed class LlamaForCausalLm : Module<Tensor, Tensor, Tensor> {
             return;
         adapter.Add($"{prefix}.lora_A.weight", linear.LoraA);
         adapter.Add($"{prefix}.lora_B.weight", linear.LoraB);
+    }
+
+    private static void LoadAdapter(
+        IReadOnlyDictionary<string, Tensor> tensors,
+        string prefix,
+        LoraLinear linear) {
+        if (!linear.IsLoraEnabled)
+            return;
+        LoraLinear.CopyTensor(linear.LoraA, Require(tensors, $"{prefix}.lora_A.weight"),
+            $"{prefix}.lora_A.weight");
+        LoraLinear.CopyTensor(linear.LoraB, Require(tensors, $"{prefix}.lora_B.weight"),
+            $"{prefix}.lora_B.weight");
     }
 }

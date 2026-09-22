@@ -145,7 +145,37 @@ public sealed record TrainConfig {
             throw new ArgumentException("invalid optimizer hyperparameter");
         if (Device is not ("auto" or "cpu" or "cuda"))
             throw new ArgumentException("--device must be auto, cpu, or cuda");
-        if (DType is not ("float32" or "float16" or "bfloat16"))
-            throw new ArgumentException("--dtype must be float32, float16, or bfloat16");
+        if (DType is not ("float32" or "bfloat16"))
+            throw new ArgumentException(
+                "--dtype must be float32 or bfloat16; float16 training requires FP32 optimizer master weights");
+    }
+}
+
+public sealed record AdapterConfig(
+    string BaseModelNameOrPath,
+    long Rank,
+    double Alpha,
+    double Dropout,
+    IReadOnlySet<string> TargetModules) {
+    public static AdapterConfig Load(string adapterDirectory) {
+        var path = Path.Combine(adapterDirectory, "adapter_config.json");
+        if (!File.Exists(path))
+            throw new FileNotFoundException("adapter directory has no adapter_config.json", path);
+
+        using var document = JsonDocument.Parse(File.ReadAllBytes(path));
+        var root = document.RootElement;
+        var rank = root.GetProperty("r").GetInt64();
+        var alpha = root.GetProperty("lora_alpha").GetDouble();
+        var dropout = root.GetProperty("lora_dropout").GetDouble();
+        var targets = root.GetProperty("target_modules")
+            .EnumerateArray()
+            .Select(value => value.GetString() ?? throw new InvalidDataException("null adapter target module"))
+            .ToHashSet(StringComparer.Ordinal);
+        var baseModel = root.TryGetProperty("base_model_name_or_path", out var baseModelElement)
+            ? baseModelElement.GetString() ?? ""
+            : "";
+        if (rank <= 0 || alpha <= 0 || dropout is < 0 or >= 1 || targets.Count == 0)
+            throw new InvalidDataException($"invalid adapter configuration: {path}");
+        return new AdapterConfig(baseModel, rank, alpha, dropout, targets);
     }
 }
