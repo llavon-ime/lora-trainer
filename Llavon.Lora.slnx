@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/Llavon.Lora.Core/Llavon.Lora.Core.csproj" />
+  <Project Path="src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj" />
+  <Project Path="tests/Llavon.Lora.Tests/Llavon.Lora.Tests.csproj" />
+</Solution>
