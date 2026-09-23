@@ -10,6 +10,6 @@
   <ItemGroup>
     <PackageReference Include="LLamaSharp" Version="0.27.0" />
     <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.27.0" />
-    <PackageReference Include="TorchSharp" Version="0.107.0" />
+    <PackageReference Include="TorchSharp" Version="$(TorchSharpVersion)" />
   </ItemGroup>
 </Project>

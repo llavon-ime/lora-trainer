@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <!-- 0.106 is the first TorchSharp release backed by LibTorch 2.10.0.
+         Keep every executable and test project aligned here; 0.107.0's
+         published native binding currently has a known ABI mismatch. -->
+    <TorchSharpVersion>0.106.0</TorchSharpVersion>
+  </PropertyGroup>
+</Project>

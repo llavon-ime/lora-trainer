@@ -50,7 +50,9 @@ jobs:
         with:
           dotnet-version: 8.0.x
           cache: true
-          cache-dependency-path: '**/*.csproj'
+          cache-dependency-path: |
+            **/*.csproj
+            Directory.Build.props
       - run: dotnet restore Llavon.Lora.slnx --configfile NuGet.Config --runtime ${{ matrix.rid }}
       - run: dotnet build Llavon.Lora.slnx -c Release --no-restore -p:Version=${{ needs.version.outputs.version }} -p:InformationalVersion=${{ needs.version.outputs.version }}
       - run: dotnet test tests/Llavon.Lora.Tests/Llavon.Lora.Tests.csproj -c Release --runtime ${{ matrix.rid }} --no-restore -p:Version=${{ needs.version.outputs.version }} -p:InformationalVersion=${{ needs.version.outputs.version }}
@@ -89,7 +91,9 @@ jobs:
         with:
           dotnet-version: 8.0.x
           cache: true
-          cache-dependency-path: '**/*.csproj'
+          cache-dependency-path: |
+            **/*.csproj
+            Directory.Build.props
 
       - name: Publish
         shell: bash
@@ -176,7 +180,9 @@ jobs:
         with:
           dotnet-version: 8.0.x
           cache: true
-          cache-dependency-path: '**/*.csproj'
+          cache-dependency-path: |
+            **/*.csproj
+            Directory.Build.props
       - name: Publish NativeAOT installer
         shell: pwsh
         run: |
