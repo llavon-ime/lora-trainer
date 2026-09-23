@@ -6,7 +6,7 @@ using Llavon.Lora;
 return ProgramEntry.Run(args);
 
 internal static class ProgramEntry {
-    internal const int TrainerApiVersion = 1;
+    internal const int TrainerApiVersion = 2;
 
     private const string Help = """
         llavon-lora: token-level LoRA training for Hugging Face Llama checkpoints
@@ -116,6 +116,7 @@ internal static class ProgramEntry {
     private static int RunTrain(Arguments arguments) {
         arguments.Allow(
             "--model-config", "--model", "--train-data", "--output-dir", "--target-modules",
+            "--resume-adapter",
             "--pad-token-id", "--max-seq-length", "--rank", "--alpha", "--dropout", "--batch-size",
             "--gradient-accumulation", "--epochs", "--max-steps", "--learning-rate", "--weight-decay",
             "--warmup-steps", "--max-grad-norm", "--save-every", "--device", "--dtype", "--seed",
@@ -129,6 +130,7 @@ internal static class ProgramEntry {
             ModelPath = arguments.Required("--model"),
             TrainDataPath = arguments.Required("--train-data"),
             OutputDirectory = arguments.Required("--output-dir"),
+            ResumeAdapterDirectory = arguments.Optional("--resume-adapter"),
             TargetModules = targets,
             PadTokenId = arguments.Integer("--pad-token-id", required: true),
             MaxSequenceLength = arguments.Integer("--max-seq-length", required: true),

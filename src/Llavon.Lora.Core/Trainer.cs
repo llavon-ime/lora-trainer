@@ -171,6 +171,8 @@ public static class Trainer {
         using var model = new LlamaForCausalLm(
             modelConfig, config.Rank, config.Alpha, config.Dropout, config.TargetModules);
         model.LoadBaseWeights(config.ModelPath);
+        if (config.ResumeAdapterDirectory is not null)
+            model.LoadPeftAdapter(config.ResumeAdapterDirectory);
         model.to(device, dtype);
         model.train();
 

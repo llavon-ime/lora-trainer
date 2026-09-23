@@ -98,6 +98,7 @@ public sealed record TrainConfig {
     public required string ModelPath { get; init; }
     public required string TrainDataPath { get; init; }
     public required string OutputDirectory { get; init; }
+    public string? ResumeAdapterDirectory { get; init; }
     public required IReadOnlySet<string> TargetModules { get; init; }
     public long PadTokenId { get; init; } = -1;
     public long Rank { get; init; } = 16;
@@ -126,6 +127,9 @@ public sealed record TrainConfig {
         if (string.IsNullOrWhiteSpace(ModelPath) || string.IsNullOrWhiteSpace(TrainDataPath) ||
             string.IsNullOrWhiteSpace(OutputDirectory))
             throw new ArgumentException("--model, --train-data, and --output-dir are required");
+        if (ResumeAdapterDirectory is not null &&
+            string.IsNullOrWhiteSpace(ResumeAdapterDirectory))
+            throw new ArgumentException("--resume-adapter must name an adapter directory");
         if (TargetModules.Count == 0)
             throw new ArgumentException("--target-modules must name at least one projection");
         foreach (var name in TargetModules)

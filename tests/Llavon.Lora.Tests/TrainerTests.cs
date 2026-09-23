@@ -167,6 +167,7 @@ public sealed class TrainerTests {
         var root = Path.Combine(Path.GetTempPath(), $"llavon-lora-{Guid.NewGuid():N}");
         var modelDirectory = Path.Combine(root, "model");
         var outputDirectory = Path.Combine(root, "adapter");
+        var resumedOutputDirectory = Path.Combine(root, "adapter-resumed");
         Directory.CreateDirectory(modelDirectory);
         var weights = new Dictionary<string, Tensor>(StringComparer.Ordinal);
         try {
@@ -232,14 +233,47 @@ public sealed class TrainerTests {
             using (var state = JsonDocument.Parse(
                        File.ReadAllBytes(Path.Combine(outputDirectory, "training_state.json"))))
                 Assert.Equal(2e-4, state.RootElement.GetProperty("learning_rate").GetDouble());
+            Tensor? firstTrainedWeight = null;
             var adapter = SafeTensors.LoadModel(Path.Combine(outputDirectory, "adapter_model.safetensors"));
             try {
                 Assert.Equal(2, adapter.Count);
                 Assert.Contains("base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight", adapter);
                 Assert.Contains("base_model.model.model.layers.0.self_attn.q_proj.lora_B.weight", adapter);
+                firstTrainedWeight = adapter[
+                    "base_model.model.model.layers.0.self_attn.q_proj.lora_B.weight"].clone();
             } finally {
                 foreach (var tensor in adapter.Values)
                     tensor.Dispose();
+            }
+
+            try {
+                Trainer.Train(new TrainConfig {
+                    ModelConfigPath = modelConfigPath,
+                    ModelPath = modelDirectory,
+                    TrainDataPath = dataPath,
+                    OutputDirectory = resumedOutputDirectory,
+                    ResumeAdapterDirectory = outputDirectory,
+                    TargetModules = new HashSet<string>(StringComparer.Ordinal) { "q_proj" },
+                    PadTokenId = 0,
+                    MaxSequenceLength = 8,
+                    Rank = 2,
+                    BatchSize = 1,
+                    MaxSteps = 1,
+                    Device = "cpu",
+                    DType = "float32"
+                });
+                var resumed = SafeTensors.LoadModel(
+                    Path.Combine(resumedOutputDirectory, "adapter_model.safetensors"));
+                try {
+                    Assert.False(torch.allclose(
+                        firstTrainedWeight,
+                        resumed["base_model.model.model.layers.0.self_attn.q_proj.lora_B.weight"]));
+                } finally {
+                    foreach (var tensor in resumed.Values)
+                        tensor.Dispose();
+                }
+            } finally {
+                firstTrainedWeight?.Dispose();
             }
 
             var ggufPath = Path.Combine(root, "model-with-adapter-f32.gguf");
