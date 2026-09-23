@@ -36,7 +36,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-latest
+            rid: osx-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -45,9 +51,9 @@ jobs:
           dotnet-version: 8.0.x
           cache: true
           cache-dependency-path: '**/*.csproj'
-      - run: dotnet restore Llavon.Lora.slnx --configfile NuGet.Config
+      - run: dotnet restore Llavon.Lora.slnx --configfile NuGet.Config --runtime ${{ matrix.rid }}
       - run: dotnet build Llavon.Lora.slnx -c Release --no-restore -p:Version=${{ needs.version.outputs.version }} -p:InformationalVersion=${{ needs.version.outputs.version }}
-      - run: dotnet test tests/Llavon.Lora.Tests/Llavon.Lora.Tests.csproj -c Release --no-build --no-restore
+      - run: dotnet test tests/Llavon.Lora.Tests/Llavon.Lora.Tests.csproj -c Release --runtime ${{ matrix.rid }} --no-restore -p:Version=${{ needs.version.outputs.version }} -p:InformationalVersion=${{ needs.version.outputs.version }}
 
   publish:
     name: Publish ${{ matrix.id }}
