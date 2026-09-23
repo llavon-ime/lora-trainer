@@ -45,14 +45,14 @@ jobs:
             rid: osx-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
           cache: true
           cache-dependency-path: |
             **/*.csproj
-            Directory.Build.props
+            Directory.Build.*
       - run: dotnet restore Llavon.Lora.slnx --configfile NuGet.Config --runtime ${{ matrix.rid }}
       - run: dotnet build Llavon.Lora.slnx -c Release --no-restore -p:Version=${{ needs.version.outputs.version }} -p:InformationalVersion=${{ needs.version.outputs.version }}
       - run: dotnet test tests/Llavon.Lora.Tests/Llavon.Lora.Tests.csproj -c Release --runtime ${{ matrix.rid }} --no-restore -p:Version=${{ needs.version.outputs.version }} -p:InformationalVersion=${{ needs.version.outputs.version }}
@@ -86,14 +86,14 @@ jobs:
       TARGET_RID: ${{ matrix.rid }}
       TORCH_BACKEND: ${{ matrix.backend }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
           cache: true
           cache-dependency-path: |
             **/*.csproj
-            Directory.Build.props
+            Directory.Build.*
 
       - name: Publish
         shell: bash
@@ -175,14 +175,14 @@ jobs:
     env:
       RELEASE_VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
           cache: true
           cache-dependency-path: |
             **/*.csproj
-            Directory.Build.props
+            Directory.Build.*
       - name: Publish NativeAOT installer
         shell: pwsh
         run: |
@@ -210,7 +210,7 @@ jobs:
       RELEASE_VERSION: ${{ needs.version.outputs.version }}
       RELEASE_TAG: ${{ needs.version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/download-artifact@v4

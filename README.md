@@ -25,6 +25,8 @@ Its loss semantics match the historical IME training code:
 
 TorchSharp and prebuilt LibTorch binaries are restored from NuGet. The CLI can
 be published self-contained, so target machines do not need a .NET runtime.
+Apple Silicon builds retarget LibTorch to the bundled OpenMP runtime, so macOS
+users do not need a separate Homebrew `libomp` installation.
 
 ## Input format
 

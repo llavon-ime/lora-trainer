@@ -1,0 +1,15 @@
+<Project>
+  <!-- LibTorch 2.10's Apple Silicon binary links libomp through a Homebrew-only
+       absolute path even though the NuGet package ships libomp beside it. -->
+  <Target Name="FixMacOsLibTorchOpenMpForBuild"
+          AfterTargets="Build"
+          Condition="$([MSBuild]::IsOSPlatform('osx')) and '$(RuntimeIdentifier)' == 'osx-arm64' and Exists('$(TargetDir)libtorch_cpu.dylib')">
+    <Exec Command="set -e; if otool -L &quot;$(TargetDir)libtorch_cpu.dylib&quot; | grep -Fq &quot;/opt/homebrew/opt/libomp/lib/libomp.dylib&quot;; then install_name_tool -change /opt/homebrew/opt/libomp/lib/libomp.dylib @loader_path/libomp.dylib &quot;$(TargetDir)libtorch_cpu.dylib&quot;; codesign --force --sign - --timestamp=none &quot;$(TargetDir)libtorch_cpu.dylib&quot;; fi; otool -L &quot;$(TargetDir)libtorch_cpu.dylib&quot; | grep -Fq &quot;@loader_path/libomp.dylib&quot;" />
+  </Target>
+
+  <Target Name="FixMacOsLibTorchOpenMpForPublish"
+          AfterTargets="Publish"
+          Condition="$([MSBuild]::IsOSPlatform('osx')) and '$(RuntimeIdentifier)' == 'osx-arm64' and Exists('$(PublishDir)libtorch_cpu.dylib')">
+    <Exec Command="set -e; if otool -L &quot;$(PublishDir)libtorch_cpu.dylib&quot; | grep -Fq &quot;/opt/homebrew/opt/libomp/lib/libomp.dylib&quot;; then install_name_tool -change /opt/homebrew/opt/libomp/lib/libomp.dylib @loader_path/libomp.dylib &quot;$(PublishDir)libtorch_cpu.dylib&quot;; codesign --force --sign - --timestamp=none &quot;$(PublishDir)libtorch_cpu.dylib&quot;; fi; otool -L &quot;$(PublishDir)libtorch_cpu.dylib&quot; | grep -Fq &quot;@loader_path/libomp.dylib&quot;" />
+  </Target>
+</Project>
