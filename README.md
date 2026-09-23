@@ -187,6 +187,10 @@ Arm64. The rolling `latest` release contains `latest.json`; its download URLs
 always point to an immutable CalVer release and include SHA-256 and byte-size
 metadata.
 
+Release artifacts use .NET single-file publishing. Managed assemblies are
+bundled into `llavon-lora`; the remaining native payload is filtered by RID
+(`.dll` on Windows, `.so` on Linux, and `.dylib` on macOS).
+
 The Windows release also contains a small NativeAOT web installer. It compares
 the local `llavon-lora-manifest.json` with an immutable release manifest before
 downloading the selected archive, rejects size or SHA-256 mismatches, and
@@ -197,6 +201,7 @@ CPU, self-contained:
 ```sh
 dotnet publish src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj \
   -c Release -r linux-x64 --self-contained true \
+  -p:PublishSingleFile=true -p:DebugType=None \
   -p:TorchBackend=cpu -o artifacts/linux-x64-cpu
 ```
 
@@ -234,5 +239,7 @@ use float32 or bfloat16 for training.
 
 Reference `src/Llavon.Lora.Core/Llavon.Lora.Core.csproj` to reuse dataset
 validation, safetensors I/O, the Llama/LoRA model, or the constrained-loss API.
+Applications that call GGUF quantization must reference one LLamaSharp backend;
+the CLI uses `LLamaSharp.Backend.Cpu`.
 The C++ IME should normally invoke the CLI as a child process so CUDA failures
 and GPU memory lifetime stay isolated from the input-method process.

@@ -109,6 +109,9 @@ jobs:
             -r "$TARGET_RID" \
             --self-contained true \
             --no-restore \
+            -p:PublishSingleFile=true \
+            -p:DebugSymbols=false \
+            -p:DebugType=None \
             -p:TorchBackend="$TORCH_BACKEND" \
             -p:Version="$RELEASE_VERSION" \
             -p:InformationalVersion="$RELEASE_VERSION" \
