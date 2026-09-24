@@ -134,6 +134,10 @@ jobs:
             [System.Text.UTF8Encoding]::new($false)
           )
 
+      - name: Include license in artifact
+        shell: pwsh
+        run: Copy-Item LICENSE "artifacts/publish/$env:ARTIFACT_ID/LICENSE"
+
       - name: Smoke test native artifact
         if: matrix.id == 'win-x64-cpu' || matrix.id == 'linux-x64-cpu'
         shell: bash
