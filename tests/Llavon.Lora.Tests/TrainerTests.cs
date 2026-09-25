@@ -87,6 +87,19 @@ public sealed class TrainerTests {
     }
 
     [Fact]
+    public void GradientAccumulationAveragesTheActualTailSize() {
+        using var parameter = torch.nn.Parameter(torch.tensor(2f));
+        using var loss = parameter * 3;
+        loss.backward();
+
+        Trainer.AverageAccumulatedGradients([parameter], 2);
+
+        using var gradient = parameter.grad;
+        Assert.NotNull(gradient);
+        Assert.Equal(1.5f, gradient.item<float>(), 5);
+    }
+
+    [Fact]
     public void CandidateConstrainedLossBatchesDifferentCandidateWidthsAndFullVocabularyRows() {
         using var batch = new TrainingBatch {
             Tokens = torch.tensor(new long[,] { { 0, 0, 0 }, { 0, 0, 0 } }),
@@ -168,6 +181,7 @@ public sealed class TrainerTests {
         var modelDirectory = Path.Combine(root, "model");
         var outputDirectory = Path.Combine(root, "adapter");
         var resumedOutputDirectory = Path.Combine(root, "adapter-resumed");
+        var tailOutputDirectory = Path.Combine(root, "adapter-tail");
         Directory.CreateDirectory(modelDirectory);
         var weights = new Dictionary<string, Tensor>(StringComparer.Ordinal);
         try {
@@ -247,6 +261,32 @@ public sealed class TrainerTests {
             }
 
             try {
+                Trainer.Train(new TrainConfig {
+                    ModelConfigPath = modelConfigPath,
+                    ModelPath = modelDirectory,
+                    TrainDataPath = dataPath,
+                    OutputDirectory = tailOutputDirectory,
+                    TargetModules = new HashSet<string>(StringComparer.Ordinal) { "q_proj" },
+                    PadTokenId = 0,
+                    MaxSequenceLength = 8,
+                    Rank = 2,
+                    BatchSize = 1,
+                    GradientAccumulationSteps = 4,
+                    MaxSteps = 1,
+                    Device = "cpu",
+                    DType = "float32"
+                });
+                var tail = SafeTensors.LoadModel(
+                    Path.Combine(tailOutputDirectory, "adapter_model.safetensors"));
+                try {
+                    Assert.True(torch.allclose(firstTrainedWeight,
+                        tail["base_model.model.model.layers.0.self_attn.q_proj.lora_B.weight"],
+                        rtol: 1e-5, atol: 1e-6));
+                } finally {
+                    foreach (var tensor in tail.Values)
+                        tensor.Dispose();
+                }
+
                 Trainer.Train(new TrainConfig {
                     ModelConfigPath = modelConfigPath,
                     ModelPath = modelDirectory,

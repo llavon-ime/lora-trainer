@@ -223,7 +223,7 @@ public static class Trainer {
                     var logits = model.call(deviceTokens, deviceAttention);
                     var loss = CandidateConstrainedLoss(logits, batch);
                     lossValue = loss.item<float>();
-                    (loss / config.GradientAccumulationSteps).backward();
+                    loss.backward();
                 }
                 accumulatedLoss += lossValue;
                 ++accumulated;
@@ -235,6 +235,7 @@ public static class Trainer {
                 var learningRate = ScheduledLearningRate(config, globalStep);
                 foreach (var group in optimizer.ParamGroups)
                     group.LearningRate = learningRate;
+                AverageAccumulatedGradients(trainable, accumulated);
                 if (config.MaxGradientNorm > 0)
                     torch.nn.utils.clip_grad_norm_(trainable, config.MaxGradientNorm);
                 optimizer.step();
@@ -261,6 +262,18 @@ public static class Trainer {
         var finalLearningRate = ScheduledLearningRate(config, Math.Max(0, globalStep - 1));
         WriteTrainingState(config.OutputDirectory, globalStep, lastMeanLoss, finalLearningRate);
         Console.WriteLine($"adapter saved to {config.OutputDirectory}");
+    }
+
+    internal static void AverageAccumulatedGradients(
+        IEnumerable<Parameter> parameters, int accumulated) {
+        if (accumulated <= 0)
+            throw new ArgumentOutOfRangeException(nameof(accumulated));
+        // The last group in an epoch can contain fewer micro batches.
+        using var noGrad = torch.no_grad();
+        foreach (var parameter in parameters) {
+            using var gradient = parameter.grad;
+            gradient?.mul_(1d / accumulated);
+        }
     }
 
     private static ScalarType ResolveDType(string name) => name switch {
