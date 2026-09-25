@@ -1,36 +1,34 @@
 # Llavon LoRA Trainer
 
-`llavon-lora` is a standalone, cross-platform .NET 8 CLI and library built on
-TorchSharp. It fine-tunes LoRA adapters for Hugging Face Llama checkpoints from
-numeric token IDs and position-level masks supplied entirely by the caller.
+`llavon-lora` 是以 TorchSharp 建置的獨立、跨平台 .NET 8 CLI 與函式庫，用完全由
+呼叫端提供的數值 token ID 與位置層級遮罩，為 Hugging Face Llama checkpoint
+微調 LoRA adapter。
 
-The trainer contains no tokenizer, vocabulary, special-token IDs, bopomofo
-table, candidate table, or language-specific data.
+trainer 不含斷詞器、詞彙、特殊 token ID、注音表、候選字表或任何語言特定資料。
 
-Its loss semantics match the historical IME training code:
+其 loss 語意與既有的輸入法訓練程式碼一致：
 
-- logits at position `p - 1` predict `labels[p]`;
-- `loss_weights[p] == 0` excludes position `p` from loss;
-- `candidate_masks[p]` restricts cross entropy at position `p` to supplied
-  token IDs;
-- a target absent from its candidate mask is rejected during JSONL validation;
-- loss is the weighted mean across trainable positions.
+- 位置 `p - 1` 的 logits 預測 `labels[p]`；
+- `loss_weights[p] == 0` 會把位置 `p` 排除在 loss 之外；
+- `candidate_masks[p]` 會把位置 `p` 的交叉熵限制在提供的 token ID；
+- 目標不在其候選遮罩中時，會在 JSONL 驗證階段被拒絕；
+- loss 是可訓練位置上的加權平均。
 
-## Requirements
+## 需求
 
-- .NET 8 SDK for development;
-- automated releases are CPU-only and require neither CUDA nor an NVIDIA driver;
-- an explicit local CUDA publish uses prebuilt NuGet binaries, needs no CUDA
-  Toolkit or NVCC at build time, and requires a compatible NVIDIA driver at runtime.
+- 開發需要 .NET 8 SDK；
+- 自動發行版僅支援 CPU，不需要 CUDA 或 NVIDIA 驅動程式；
+- 手動在本機發佈 CUDA 版本會使用預先建置的 NuGet 二進位檔，建置時不需要
+  CUDA Toolkit 或 NVCC，執行時需要相容的 NVIDIA 驅動程式。
 
-TorchSharp and prebuilt LibTorch binaries are restored from NuGet. The CLI can
-be published self-contained, so target machines do not need a .NET runtime.
-Apple Silicon builds retarget LibTorch to the bundled OpenMP runtime, so macOS
-users do not need a separate Homebrew `libomp` installation.
+TorchSharp 與預先建置的 LibTorch 二進位檔會從 NuGet 還原。CLI 可以發佈成
+self-contained，因此目標機器不需要 .NET 執行階段。Apple Silicon 建置會把
+LibTorch 重新指向內附的 OpenMP 執行階段，因此 macOS 使用者不需要另外用
+Homebrew 安裝 `libomp`。
 
-## Input format
+## 輸入格式
 
-Training data is UTF-8 JSONL. Each non-empty line is one complete sequence:
+訓練資料是 UTF-8 JSONL。每個非空行是一筆完整序列：
 
 ```json
 {
@@ -42,15 +40,13 @@ Training data is UTF-8 JSONL. Each non-empty line is one complete sequence:
 }
 ```
 
-`input_ids` is an alias for `tokens`, and `loss_mask` is an alias for
-`loss_weights`. If `labels` is omitted it equals `tokens`. If `attention_mask`
-is omitted every position is attended. `candidate_masks` may be omitted for
-ordinary full-vocabulary causal loss.
+`input_ids` 是 `tokens` 的別名，`loss_mask` 是 `loss_weights` 的別名。省略
+`labels` 時會等於 `tokens`；省略 `attention_mask` 時每個位置都會被關注。
+`candidate_masks` 可在一般的全詞彙 causal loss 下省略。
 
-All IDs above are placeholders. The process creating the JSONL must supply the
-actual IDs and masks.
+上述所有 ID 都是佔位符。產生 JSONL 的處理程序必須提供實際的 ID 與遮罩。
 
-## Build and test
+## 建置與測試
 
 ```sh
 dotnet restore Llavon.Lora.slnx --configfile NuGet.Config
@@ -59,10 +55,9 @@ dotnet test tests/Llavon.Lora.Tests/Llavon.Lora.Tests.csproj \
   -c Release --no-build --no-restore
 ```
 
-The regular test suite uses only the CPU backend and therefore needs neither a
-GPU nor NVCC.
+一般測試套件只使用 CPU 後端，因此不需要 GPU 或 NVCC。
 
-## Validate data
+## 驗證資料
 
 ```sh
 dotnet run --project src/Llavon.Lora.Cli -c Release -- validate \
@@ -71,23 +66,20 @@ dotnet run --project src/Llavon.Lora.Cli -c Release -- validate \
   --max-seq-length 384
 ```
 
-Validation reads only numeric JSONL and does not load a model.
+驗證只讀取數值 JSONL，不會載入模型。
 
-## IME integration test
+## 輸入法整合測試
 
-The production CLI deliberately does not tokenize text or load IME tables. It
-accepts only complete numeric token, label, weight, attention, and candidate-mask
-arrays. The `tests/Llavon.Lora.Integration` executable contains the `ime-core`
-compatibility tokenizer used to prepare the public validation fixture and to
-measure the base model and trained adapter. It is test-only code and is not
-included in the CLI or Core assemblies.
+正式 CLI 刻意不對文字斷詞，也不載入輸入法表。它只接受完整的數值 token、
+label、weight、attention 與候選遮罩陣列。`tests/Llavon.Lora.Integration`
+執行檔內含 `ime-core` 相容的斷詞器，用來準備公開驗證 fixture，以及量測基礎模型
+與訓練後的 adapter。這是僅供測試的程式碼，不會包含在 CLI 或 Core 組件中。
 
-The table files must match the model checkpoint. The current public
-`tony65535/llavon-ime-llama-250m` checkpoint uses the `ime-core` tables from
-commit `00e3042`; later tables contain token IDs outside its vocabulary.
+表檔案必須與模型 checkpoint 相符。目前公開的
+`tony65535/llavon-ime-llama-250m` checkpoint 使用 commit `00e3042` 的
+`ime-core` 表；更後面的表含有超出其詞彙的 token ID。
 
-Run the test-only CUDA fixture directly when the model, validation data, and
-matching tables are available locally:
+當模型、驗證資料與相符的表都在本機時，可直接執行僅供測試的 CUDA fixture：
 
 ```powershell
 dotnet run --project tests/Llavon.Lora.Integration `
@@ -101,15 +93,15 @@ dotnet run --project tests/Llavon.Lora.Integration `
   --max-steps 42 --learning-rate 0.0001
 ```
 
-This fixture trains on the validation rows themselves, so its post-training
-score verifies the end-to-end LoRA path but is not a generalization metric.
+這個 fixture 會直接在驗證資料列上訓練，因此其訓練後分數只驗證端到端 LoRA
+流程，不是泛化指標。
 
-## Train
+## 訓練
 
-The base model must be an unquantized Hugging Face Llama checkpoint in one
-`model.safetensors` file, or a directory containing that file. Sharded models
-with `model.safetensors.index.json` are supported. Architecture values are read
-from the file passed through `--model-config`.
+基礎模型必須是未量化的 Hugging Face Llama checkpoint，放在單一
+`model.safetensors` 檔中，或是包含該檔的目錄。支援以
+`model.safetensors.index.json` 分片的模型。架構參數會從 `--model-config`
+傳入的檔案讀取。
 
 ```sh
 llavon-lora train \
@@ -131,27 +123,26 @@ llavon-lora train \
   --device cuda
 ```
 
-`--target-modules` is required and is never inferred from a built-in table.
-Supported projections are `q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`,
-`up_proj`, and `down_proj`.
+`--target-modules` 是必填，永遠不會從內建表推斷。支援的 projection 有
+`q_proj`、`k_proj`、`v_proj`、`o_proj`、`gate_proj`、`up_proj` 與
+`down_proj`。
 
-The learning rate is constant after the optional linear warmup. `--max-steps`
-only stops training; it does not create a cosine decay cycle.
+學習率在選用的線性 warmup 之後保持固定。`--max-steps` 只會停止訓練，不會產生
+cosine decay 週期。
 
-Output consists of `adapter_model.safetensors`, `adapter_config.json`, and
-`training_state.json`. Adapter names and configuration follow PEFT's Llama LoRA
-convention. Base weights stay frozen and are not copied into the adapter.
+輸出包含 `adapter_model.safetensors`、`adapter_config.json` 與
+`training_state.json`。adapter 名稱與設定遵循 PEFT 的 Llama LoRA 慣例。基礎
+權重保持凍結，不會複製到 adapter。
 
-## Export GGUF
+## 匯出 GGUF
 
-`export-gguf` converts the Hugging Face checkpoint and optionally merges a PEFT
-LoRA adapter. The exporter and quantizer both run inside the CLI process: it
-does not invoke Python, `llama-quantize`, or any other executable. GGUF writing
-is implemented in `Llavon.Lora.Core`; Q4_K_M and other llama.cpp quantization
-types use the pinned `LLamaSharp.Backend.Cpu` NuGet package.
+`export-gguf` 會轉換 Hugging Face checkpoint，並可選擇合併 PEFT LoRA adapter。
+匯出器與量化器都在 CLI 處理程序內執行：不會呼叫 Python、`llama-quantize` 或
+任何其他執行檔。GGUF 寫入實作於 `Llavon.Lora.Core`；Q4_K_M 與其他 llama.cpp
+量化型別使用固定版本的 `LLamaSharp.Backend.Cpu` NuGet 套件。
 
-The complete vocabulary remains caller-owned and is required through
-`--vocab-file`; no vocabulary or IME table is compiled into the library.
+完整詞彙仍由呼叫端擁有，必須透過 `--vocab-file` 提供；函式庫內不會編入任何
+詞彙或輸入法表。
 
 ```powershell
 llavon-lora export-gguf `
@@ -164,39 +155,36 @@ llavon-lora export-gguf `
   --quantized-outfile output/ime-lora-Q4_K_M.gguf
 ```
 
-Use `--expected-outfile-sha256` and `--expected-quantized-sha256` in release
-automation to fail if conversion changes unexpectedly. The deployed base-model
-regression values are:
+在發行自動化中使用 `--expected-outfile-sha256` 與
+`--expected-quantized-sha256`，讓轉換意外變動時直接失敗。已部署基礎模型的回歸
+值為：
 
 - F16: `788e435fb4f7a07a826baf499127b5c91d8c4d3df6f4fea17b4c9379878f20f6`
 - Q4_K_M: `e0205904a65b735ed735b709d5e1502ebbe31fbd1393042573af9843d39e2ab8`
 
-## Publish
+## 發佈
 
-The release workflow assigns one Asia/Taipei (UTC+8) CalVer to every release in the form
-`YYYY.MM.DD.GITHUB_RUN_NUMBER`. For example, `2026.09.22.37` is release workflow
-run 37 on 2026-09-22. The same version is embedded in every platform artifact
-and can be queried without loading Torch:
+release workflow 會給每次發行一個 Asia/Taipei（UTC+8）的 CalVer，格式為
+`YYYY.MM.DD.GITHUB_RUN_NUMBER`。例如 `2026.09.22.37` 是 2026-09-22 的第 37 次
+release workflow 執行。相同版本會內嵌到每個平台的產物中，且不需載入 Torch
+即可查詢：
 
 ```sh
 llavon-lora --version --json
 ```
 
-Automated releases publish CPU artifacts for Windows x64, Linux x64, and macOS
-Arm64. The rolling `latest` release contains `latest.json`; its download URLs
-always point to an immutable CalVer release and include SHA-256 and byte-size
-metadata.
+自動發行會發佈 Windows x64、Linux x64 與 macOS Arm64 的 CPU 產物。滾動的
+`latest` 發行包含 `latest.json`；其下載 URL 永遠指向不可變的 CalVer 發行，並
+包含 SHA-256 與位元組大小等中繼資料。
 
-Release artifacts use .NET single-file publishing. Managed assemblies are
-bundled into `llavon-lora`; the remaining native payload is filtered by RID
-(`.dll` on Windows, `.so` on Linux, and `.dylib` on macOS).
+發行產物使用 .NET 單檔發佈。受控組件會打包進 `llavon-lora`；其餘原生 payload
+依 RID 篩選（Windows 為 `.dll`、Linux 為 `.so`、macOS 為 `.dylib`）。
 
-The Windows release also contains a small NativeAOT web installer. It compares
-the local `llavon-lora-manifest.json` with an immutable release manifest before
-downloading the selected archive, rejects size or SHA-256 mismatches, and
-replaces the installed trainer only after the new archive has been validated.
+Windows 發行版另外包含一個小型的 NativeAOT 網頁安裝器。它會在下載所選壓縮檔
+前，先把本機 `llavon-lora-manifest.json` 與不可變的發行 manifest 比對，拒絕
+大小或 SHA-256 不符者，並只在新壓縮檔驗證通過後取代已安裝的 trainer。
 
-CPU, self-contained:
+CPU、self-contained：
 
 ```sh
 dotnet publish src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj \
@@ -205,9 +193,8 @@ dotnet publish src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj \
   -p:TorchBackend=cpu -o artifacts/linux-x64-cpu
 ```
 
-CUDA is intentionally not included in automated releases: TorchSharp's
-CUDA-enabled LibTorch runtime is several gigabytes and is not a practical
-default download. Developers can still create an explicit local CUDA publish:
+CUDA 刻意不包含在自動發行中：TorchSharp 啟用 CUDA 的 LibTorch 執行階段有數
+GB，不適合作為預設下載。開發者仍可手動建立本機 CUDA 發佈：
 
 ```powershell
 dotnet publish src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj `
@@ -215,12 +202,12 @@ dotnet publish src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj `
   -p:TorchBackend=cuda-windows -o artifacts/win-x64-cuda
 ```
 
-Linux CUDA uses `-p:TorchBackend=cuda-linux`. These CUDA publishes restore
-prebuilt native binaries and do not invoke NVCC. Publish separate CPU and CUDA
-archives instead of combining both backends.
+Linux CUDA 使用 `-p:TorchBackend=cuda-linux`。這些 CUDA 發佈會還原預先建置的
+原生二進位檔，不會呼叫 NVCC。請分開發佈 CPU 與 CUDA 壓縮檔，不要把兩種後端
+合併。
 
-For a smaller Windows installer payload, publish framework-dependent and let
-the installer provide the .NET runtime prerequisite:
+若想縮小 Windows 安裝器的 payload，可改發佈 framework-dependent，並由安裝器
+提供 .NET 執行階段的前置需求：
 
 ```powershell
 dotnet publish src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj `
@@ -228,18 +215,15 @@ dotnet publish src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj `
   -p:TorchBackend=cpu -o artifacts/win-x64-cpu-framework-dependent
 ```
 
-Native AOT and trimming are intentionally disabled because TorchSharp does not
-currently guarantee compatibility with either mode.
+Native AOT 與 trimming 刻意停用，因為 TorchSharp 目前不保證與這兩種模式相容。
 
-Float16 training is rejected until FP32 optimizer master weights or proper AMP
-are implemented. Float16 remains appropriate for the test-only inference pass;
-use float32 or bfloat16 for training.
+在實作 FP32 optimizer master weights 或正確的 AMP 之前，Float16 訓練會被
+拒絕。Float16 仍適用於僅供測試的推論階段；訓練請使用 float32 或 bfloat16。
 
-## Library use
+## 以函式庫使用
 
-Reference `src/Llavon.Lora.Core/Llavon.Lora.Core.csproj` to reuse dataset
-validation, safetensors I/O, the Llama/LoRA model, or the constrained-loss API.
-Applications that call GGUF quantization must reference one LLamaSharp backend;
-the CLI uses `LLamaSharp.Backend.Cpu`.
-The C++ IME should normally invoke the CLI as a child process so CUDA failures
-and GPU memory lifetime stay isolated from the input-method process.
+參考 `src/Llavon.Lora.Core/Llavon.Lora.Core.csproj`，即可重用資料集驗證、
+safetensors I/O、Llama/LoRA 模型或受限 loss API。呼叫 GGUF 量化的應用程式必須
+參考一個 LLamaSharp 後端；CLI 使用 `LLamaSharp.Backend.Cpu`。C++ 輸入法通常
+應以子處理程序方式呼叫 CLI，讓 CUDA 失敗與 GPU 記憶體生命週期與輸入法處理
+程序隔離。
