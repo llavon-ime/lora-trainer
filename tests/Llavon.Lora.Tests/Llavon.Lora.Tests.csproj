@@ -12,8 +12,11 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Llavon.Lora.Core\Llavon.Lora.Core.csproj" />
     <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.27.0" />
+    <!-- Building with -p:TorchBackend=rocm-linux drops the bundled libtorch so
+         that LLAVON_LORA_TORCH_LIB can supply a ROCm one, e.g. for the GPU
+         smoke test. -->
+    <PackageReference Include="TorchSharp-cpu" Version="$(TorchSharpVersion)" Condition="'$(TorchBackend)' == '' or '$(TorchBackend)' == 'cpu'" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
-    <PackageReference Include="TorchSharp-cpu" Version="$(TorchSharpVersion)" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4">
       <PrivateAssets>all</PrivateAssets>

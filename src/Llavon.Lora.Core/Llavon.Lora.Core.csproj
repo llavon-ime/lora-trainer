@@ -11,4 +11,10 @@
     <PackageReference Include="LLamaSharp" Version="0.27.0" />
     <PackageReference Include="TorchSharp" Version="$(TorchSharpVersion)" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- The unit tests exercise the device selection and native-library
+         resolution rules, which are internal to keep the public surface small. -->
+    <InternalsVisibleTo Include="Llavon.Lora.Tests" />
+  </ItemGroup>
 </Project>

@@ -10,6 +10,12 @@
     <Version Condition="'$(Version)' == ''">0.0.0.0</Version>
     <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(Version)</InformationalVersion>
     <TorchBackend Condition="'$(TorchBackend)' == ''">cpu</TorchBackend>
+    <!-- The ROCm backend bundles the official PyTorch libtorch for ROCm 7.0,
+         whose ABI matches LibTorch 2.10; scripts/fetch-libtorch-rocm.sh fills
+         this cache. The HIP libraries are loaded at run time by
+         TorchNativeLibraries, because TorchSharp has no ROCm package. -->
+    <LlavonRocmLibtorchDirectory Condition="'$(LlavonRocmLibtorchDirectory)' == '' and '$(LLAVON_LORA_LIBTORCH_DIR)' != ''">$(LLAVON_LORA_LIBTORCH_DIR)</LlavonRocmLibtorchDirectory>
+    <LlavonRocmLibtorchDirectory Condition="'$(LlavonRocmLibtorchDirectory)' == ''">$(HOME)/.cache/llavon-lora/libtorch-rocm7.0-2.10.0/libtorch/lib</LlavonRocmLibtorchDirectory>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,7 +27,46 @@
   </ItemGroup>
 
   <Target Name="ValidateTorchBackend" BeforeTargets="Restore;Build">
-    <Error Condition="'$(TorchBackend)' != 'cpu' and '$(TorchBackend)' != 'cuda-windows' and '$(TorchBackend)' != 'cuda-linux'"
-           Text="TorchBackend must be cpu, cuda-windows, or cuda-linux." />
+    <Error Condition="'$(TorchBackend)' != 'cpu' and '$(TorchBackend)' != 'cuda-windows' and '$(TorchBackend)' != 'cuda-linux' and '$(TorchBackend)' != 'rocm-linux'"
+           Text="TorchBackend must be cpu, cuda-windows, cuda-linux, or rocm-linux." />
+    <Error Condition="'$(TorchBackend)' == 'rocm-linux' and !$([MSBuild]::IsOSPlatform('Linux'))"
+           Text="TorchBackend=rocm-linux is only available on Linux." />
+  </Target>
+
+  <Target Name="WarnMissingRocmLibtorch"
+          BeforeTargets="Build"
+          Condition="'$(TorchBackend)' == 'rocm-linux' and !Exists('$(LlavonRocmLibtorchDirectory)/libtorch_cpu.so')">
+    <Warning Text="The ROCm libtorch is missing at $(LlavonRocmLibtorchDirectory), so this build has no GPU backend. Run scripts/fetch-libtorch-rocm.sh, or set -p:LlavonRocmLibtorchDirectory=DIR (or LLAVON_LORA_LIBTORCH_DIR)." />
+  </Target>
+
+  <!-- Bundling the ROCm libtorch makes the published application run on an AMD
+       GPU without extra arguments. Builds that do not bundle it can name a
+       libtorch directory at run time (see TorchNativeLibraries). -->
+  <Target Name="CopyRocmLibtorchForBuild"
+          AfterTargets="Build"
+          Condition="'$(TorchBackend)' == 'rocm-linux' and Exists('$(LlavonRocmLibtorchDirectory)/libtorch_cpu.so')">
+    <ItemGroup>
+      <RocmNativeLibrary Include="$(LlavonRocmLibtorchDirectory)/**/*" />
+      <RocmNativeLibrary Include="$(LlavonRocmLibtorchDirectory)/../build-version"
+                          Condition="Exists('$(LlavonRocmLibtorchDirectory)/../build-version')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(RocmNativeLibrary)"
+          DestinationFiles="@(RocmNativeLibrary->'$(TargetDir)%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true"
+          UseHardlinksIfPossible="true" />
+  </Target>
+
+  <Target Name="CopyRocmLibtorchForPublish"
+          AfterTargets="Publish"
+          Condition="'$(TorchBackend)' == 'rocm-linux' and Exists('$(LlavonRocmLibtorchDirectory)/libtorch_cpu.so')">
+    <ItemGroup>
+      <RocmPublishLibrary Include="$(LlavonRocmLibtorchDirectory)/**/*" />
+      <RocmPublishLibrary Include="$(LlavonRocmLibtorchDirectory)/../build-version"
+                          Condition="Exists('$(LlavonRocmLibtorchDirectory)/../build-version')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(RocmPublishLibrary)"
+          DestinationFiles="@(RocmPublishLibrary->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true"
+          UseHardlinksIfPossible="true" />
   </Target>
 </Project>

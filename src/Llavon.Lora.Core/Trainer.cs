@@ -157,15 +157,20 @@ public static class Trainer {
     }
 
     public static void Train(TrainConfig config) {
+        // An alternative libtorch has to be loaded before TorchSharp initialises
+        // its own native backend.
+        TorchNativeLibraries.Initialize(null);
         var modelConfig = ModelConfig.Load(config.ModelConfigPath);
         config.Validate(modelConfig);
         var samples = Dataset.LoadJsonLines(config.TrainDataPath, modelConfig.VocabSize, config.MaxSequenceLength);
 
         torch.manual_seed(config.Seed);
-        var device = ResolveDevice(config.Device);
+        var device = DeviceSelection.Resolve(config.Device);
         var dtype = ResolveDType(config.DType);
         if (device.type == DeviceType.CPU && dtype != ScalarType.Float32)
             throw new ArgumentException("CPU training requires --dtype float32");
+        if (device.type == DeviceType.MPS && dtype != ScalarType.Float32)
+            throw new ArgumentException("MPS training requires --dtype float32");
 
         Console.WriteLine($"loading base checkpoint from {config.ModelPath}");
         using var model = new LlamaForCausalLm(
@@ -256,15 +261,6 @@ public static class Trainer {
         var finalLearningRate = ScheduledLearningRate(config, Math.Max(0, globalStep - 1));
         WriteTrainingState(config.OutputDirectory, globalStep, lastMeanLoss, finalLearningRate);
         Console.WriteLine($"adapter saved to {config.OutputDirectory}");
-    }
-
-    private static Device ResolveDevice(string requested) {
-        if (requested == "cuda") {
-            if (!torch.cuda.is_available())
-                throw new InvalidOperationException("CUDA was requested but is not available");
-            return CUDA;
-        }
-        return requested == "auto" && torch.cuda.is_available() ? CUDA : CPU;
     }
 
     private static ScalarType ResolveDType(string name) => name switch {

@@ -7,6 +7,8 @@
     <LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <TorchBackend Condition="'$(TorchBackend)' == ''">cpu</TorchBackend>
+    <LlavonRocmLibtorchDirectory Condition="'$(LlavonRocmLibtorchDirectory)' == '' and '$(LLAVON_LORA_LIBTORCH_DIR)' != ''">$(LLAVON_LORA_LIBTORCH_DIR)</LlavonRocmLibtorchDirectory>
+    <LlavonRocmLibtorchDirectory Condition="'$(LlavonRocmLibtorchDirectory)' == ''">$(HOME)/.cache/llavon-lora/libtorch-rocm7.0-2.10.0/libtorch/lib</LlavonRocmLibtorchDirectory>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,7 +19,41 @@
   </ItemGroup>
 
   <Target Name="ValidateTorchBackend" BeforeTargets="Restore;Build">
-    <Error Condition="'$(TorchBackend)' != 'cpu' and '$(TorchBackend)' != 'cuda-windows' and '$(TorchBackend)' != 'cuda-linux'"
-           Text="TorchBackend must be cpu, cuda-windows, or cuda-linux." />
+    <Error Condition="'$(TorchBackend)' != 'cpu' and '$(TorchBackend)' != 'cuda-windows' and '$(TorchBackend)' != 'cuda-linux' and '$(TorchBackend)' != 'rocm-linux'"
+           Text="TorchBackend must be cpu, cuda-windows, cuda-linux, or rocm-linux." />
+    <Error Condition="'$(TorchBackend)' == 'rocm-linux' and !$([MSBuild]::IsOSPlatform('Linux'))"
+           Text="TorchBackend=rocm-linux is only available on Linux." />
+  </Target>
+
+  <Target Name="WarnMissingRocmLibtorch"
+          BeforeTargets="Build"
+          Condition="'$(TorchBackend)' == 'rocm-linux' and !Exists('$(LlavonRocmLibtorchDirectory)/libtorch_cpu.so')">
+    <Warning Text="The ROCm libtorch is missing at $(LlavonRocmLibtorchDirectory), so this build has no GPU backend. Run scripts/fetch-libtorch-rocm.sh, or set -p:LlavonRocmLibtorchDirectory=DIR (or LLAVON_LORA_LIBTORCH_DIR)." />
+  </Target>
+
+  <Target Name="CopyRocmLibtorchForBuild"
+          AfterTargets="Build"
+          Condition="'$(TorchBackend)' == 'rocm-linux' and Exists('$(LlavonRocmLibtorchDirectory)/libtorch_cpu.so')">
+    <ItemGroup>
+      <RocmNativeLibrary Include="$(LlavonRocmLibtorchDirectory)/**/*" />
+      <RocmNativeLibrary Include="$(LlavonRocmLibtorchDirectory)/../build-version"
+                          Condition="Exists('$(LlavonRocmLibtorchDirectory)/../build-version')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(RocmNativeLibrary)"
+          DestinationFiles="@(RocmNativeLibrary->'$(TargetDir)%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyRocmLibtorchForPublish"
+          AfterTargets="Publish"
+          Condition="'$(TorchBackend)' == 'rocm-linux' and Exists('$(LlavonRocmLibtorchDirectory)/libtorch_cpu.so')">
+    <ItemGroup>
+      <RocmPublishLibrary Include="$(LlavonRocmLibtorchDirectory)/**/*" />
+      <RocmPublishLibrary Include="$(LlavonRocmLibtorchDirectory)/../build-version"
+                          Condition="Exists('$(LlavonRocmLibtorchDirectory)/../build-version')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(RocmPublishLibrary)"
+          DestinationFiles="@(RocmPublishLibrary->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
   </Target>
 </Project>

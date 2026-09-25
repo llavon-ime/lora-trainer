@@ -35,3 +35,46 @@ jobs:
       - name: Build Windows web installer
         if: runner.os == 'Windows'
         run: dotnet publish src/Llavon.Lora.Installer/Llavon.Lora.Installer.csproj -c Release
+
+  # Metal runs on macOS 15 on purpose: the macOS 26 images have a Metal backend
+  # whose results disagree with real hardware (actions/runner-images#14380), and
+  # the test would be meaningless there.
+  metal:
+    name: macOS Metal (MPS) smoke test
+    runs-on: macos-15
+    env:
+      LLAVON_LORA_REQUIRE_MPS: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+          cache: true
+          cache-dependency-path: |
+            **/*.csproj
+            Directory.Build.*
+      - run: dotnet restore tests/Llavon.Lora.Tests/Llavon.Lora.Tests.csproj src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj --configfile NuGet.Config --runtime osx-arm64
+      - run: dotnet build tests/Llavon.Lora.Tests/Llavon.Lora.Tests.csproj -c Release --no-restore
+      - run: dotnet build src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj -c Release --no-restore
+      - run: dotnet test tests/Llavon.Lora.Tests/Llavon.Lora.Tests.csproj -c Release --runtime osx-arm64 --no-restore --filter FullyQualifiedName~AcceleratorTests
+
+  # The ROCm backend links no NuGet native package, so this job builds it
+  # without the 4.9 GB libtorch and checks that the application still starts.
+  # A machine with AMD hardware and the libtorch fetched by
+  # scripts/fetch-libtorch-rocm.sh trains with --device cuda.
+  rocm:
+    name: Linux ROCm backend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+          cache: true
+          cache-dependency-path: |
+            **/*.csproj
+            Directory.Build.*
+      - run: dotnet restore src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj --configfile NuGet.Config --runtime linux-x64 -p:TorchBackend=rocm-linux
+      - run: dotnet publish src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj -c Release --runtime linux-x64 --self-contained true --no-restore -p:TorchBackend=rocm-linux -o rocm-publish
+      - run: ./rocm-publish/llavon-lora --version
+      - run: ./rocm-publish/llavon-lora --help > /dev/null

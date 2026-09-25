@@ -14,6 +14,8 @@ internal static class ProgramEntry {
         Usage:
           llavon-lora --version [--json]
 
+          llavon-lora devices [--json]
+
           llavon-lora train --model-config FILE --model FILE_OR_DIR --train-data FILE
               --output-dir DIR --pad-token-id ID --max-seq-length N
               --target-modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj [options]
@@ -37,7 +39,10 @@ internal static class ProgramEntry {
           --warmup-steps N                 Linear warmup steps (default: 0)
           --max-grad-norm X                Gradient clipping; 0 disables it (default: 1)
           --save-every N                   Adapter checkpoint interval; 0 disables it
-          --device auto|cpu|cuda           Training device (default: auto)
+          --device auto|cpu|cuda|mps       Training device (default: auto)
+          --torch-lib-dir DIR              libtorch directory for an alternative
+                                           backend, e.g. a ROCm build (or set
+                                           LLAVON_LORA_TORCH_LIB)
           --dtype float32|bfloat16         Model compute dtype (default: float32)
           --seed N                         RNG seed (default: 42)
           --no-shuffle                     Preserve JSONL order
@@ -73,6 +78,7 @@ internal static class ProgramEntry {
                 "train" => RunTrain(arguments),
                 "validate" => RunValidate(arguments),
                 "export-gguf" => RunExportGguf(arguments),
+                "devices" => RunDevices(arguments),
                 _ => throw new ArgumentException($"unknown command: {args[0]}")
             };
         } catch (Exception exception) when (exception is not OutOfMemoryException) {
@@ -113,6 +119,48 @@ internal static class ProgramEntry {
         return 0;
     }
 
+    private static int RunDevices(Arguments arguments) {
+        arguments.Allow("--json");
+        TorchNativeLibraries.Initialize(null);
+        var (cuda, mps, mpsError) = DeviceSelection.Availability();
+        var directory = TorchNativeLibraries.InitializedDirectory;
+        var libtorch = directory is null ? null : ReadLibTorchBuildVersion(directory);
+
+        if (arguments.Flag("--json")) {
+            Console.WriteLine(JsonSerializer.Serialize(new {
+                cpu = true,
+                cuda,
+                mps,
+                libtorch,
+                torchLibDir = directory,
+                mpsError = mps ? null : mpsError
+            }));
+            return 0;
+        }
+
+        Console.WriteLine("cpu=available");
+        Console.WriteLine($"cuda={(cuda ? "available" : "unavailable")}");
+        Console.WriteLine($"mps={(mps ? "available" : "unavailable")}");
+        if (!mps && mpsError is not null)
+            Console.WriteLine($"mps-reason={mpsError}");
+        Console.WriteLine($"libtorch={libtorch ?? "bundled"}");
+        if (directory is not null)
+            Console.WriteLine($"torch-lib-dir={directory}");
+        return 0;
+    }
+
+    // build-version ships beside the libtorch libraries inside the archive.
+    private static string? ReadLibTorchBuildVersion(string directory) {
+        foreach (var candidate in new[] {
+                     Path.Combine(directory, "build-version"),
+                     Path.Combine(directory, "..", "build-version")
+                 }) {
+            if (File.Exists(candidate))
+                return File.ReadAllText(candidate).Trim();
+        }
+        return null;
+    }
+
     private static int RunTrain(Arguments arguments) {
         arguments.Allow(
             "--model-config", "--model", "--train-data", "--output-dir", "--target-modules",
@@ -120,7 +168,7 @@ internal static class ProgramEntry {
             "--pad-token-id", "--max-seq-length", "--rank", "--alpha", "--dropout", "--batch-size",
             "--gradient-accumulation", "--epochs", "--max-steps", "--learning-rate", "--weight-decay",
             "--warmup-steps", "--max-grad-norm", "--save-every", "--device", "--dtype", "--seed",
-            "--no-shuffle");
+            "--torch-lib-dir", "--no-shuffle");
 
         var targets = arguments.Required("--target-modules")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -151,6 +199,7 @@ internal static class ProgramEntry {
             Seed = arguments.Integer("--seed", 42),
             Shuffle = !arguments.Flag("--no-shuffle")
         };
+        TorchNativeLibraries.Initialize(arguments.Optional("--torch-lib-dir"));
         Trainer.Train(config);
         return 0;
     }
@@ -197,7 +246,7 @@ internal sealed class Arguments {
             var key = args[index];
             if (!key.StartsWith("--", StringComparison.Ordinal))
                 throw new ArgumentException($"unexpected positional argument: {key}");
-            if (key is "--no-shuffle" or "--force") {
+            if (key is "--no-shuffle" or "--force" or "--json") {
                 if (!flags.Add(key))
                     throw new ArgumentException($"duplicate option: {key}");
                 continue;

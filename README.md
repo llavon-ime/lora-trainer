@@ -17,9 +17,15 @@ trainer 不含斷詞器、詞彙、特殊 token ID、注音表、候選字表或
 ## 需求
 
 - 開發需要 .NET 8 SDK；
-- 自動發行版僅支援 CPU，不需要 CUDA 或 NVIDIA 驅動程式；
-- 手動在本機發佈 CUDA 版本會使用預先建置的 NuGet 二進位檔，建置時不需要
-  CUDA Toolkit 或 NVCC，執行時需要相容的 NVIDIA 驅動程式。
+- 自動發行版支援 CPU 與 macOS 的 Metal（MPS）GPU 訓練，不需要 CUDA 或
+  NVIDIA 驅動程式；macOS 產物內含啟用 MPS 的 LibTorch，因此 `--device mps`
+  不需要額外下載；
+- CUDA 版本使用預先建置的 NuGet 二進位檔在本機發佈，建置時不需要 CUDA
+  Toolkit 或 NVCC，執行時需要相容的 NVIDIA 驅動程式；
+- AMD GPU 使用 ROCm：LibTorch 沒有 Vulkan 訓練後端，而 PyTorch 讓 ROCm 走
+  `cuda` 裝置名稱，因此 `--device cuda` 在 ROCm 版本上就是 AMD GPU。建置時會
+  下載 PyTorch 官方的 ROCm LibTorch（壓縮檔約 4.9 GB，解開後約 9.4 GB），
+  執行時需要支援的 AMD 顯示卡與驅動程式。
 
 TorchSharp 與預先建置的 LibTorch 二進位檔會從 NuGet 還原。CLI 可以發佈成
 self-contained，因此目標機器不需要 .NET 執行階段。Apple Silicon 建置會把
@@ -55,7 +61,17 @@ dotnet test tests/Llavon.Lora.Tests/Llavon.Lora.Tests.csproj \
   -c Release --no-build --no-restore
 ```
 
-一般測試套件只使用 CPU 後端，因此不需要 GPU 或 NVCC。
+一般測試套件只使用 CPU 後端，因此不需要 GPU 或 NVCC。CI 會在 macOS 15 上執行
+Metal（MPS）冒煙測試，並建置 ROCm 後端確認可編譯。有 GPU 的機器可以手動執行
+同樣的冒煙測試：
+
+```sh
+scripts/fetch-libtorch-rocm.sh
+LLAVON_LORA_REQUIRE_CUDA=1 \
+LLAVON_LORA_TORCH_LIB="$HOME/.cache/llavon-lora/libtorch-rocm7.0-2.10.0/libtorch/lib" \
+  dotnet test tests/Llavon.Lora.Tests/Llavon.Lora.Tests.csproj -c Release \
+  -p:TorchBackend=rocm-linux --filter FullyQualifiedName~CudaTrainingCompletesOneStep
+```
 
 ## 驗證資料
 
@@ -126,6 +142,11 @@ llavon-lora train \
 `--target-modules` 是必填，永遠不會從內建表推斷。支援的 projection 有
 `q_proj`、`k_proj`、`v_proj`、`o_proj`、`gate_proj`、`up_proj` 與
 `down_proj`。
+
+`--device` 接受 `auto`、`cpu`、`cuda` 與 `mps`。`auto` 會依序選擇 CUDA（含
+ROCm）、MPS 與 CPU；`mps` 只在 Apple Silicon 的 macOS 上可用，且目前限定
+`--dtype float32`。`llavon-lora devices [--json]` 會列出可用的後端與目前使用
+的 LibTorch，用來確認 GPU 是否被正確偵測。
 
 學習率在選用的線性 warmup 之後保持固定。`--max-steps` 只會停止訓練，不會產生
 cosine decay 週期。
@@ -205,6 +226,30 @@ dotnet publish src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj `
 Linux CUDA 使用 `-p:TorchBackend=cuda-linux`。這些 CUDA 發佈會還原預先建置的
 原生二進位檔，不會呼叫 NVCC。請分開發佈 CPU 與 CUDA 壓縮檔，不要把兩種後端
 合併。
+
+ROCm 也刻意不包含在自動發行中，原因相同（會多出數 GB）。AMD GPU 訓練請在本機
+發佈：
+
+```sh
+scripts/fetch-libtorch-rocm.sh
+dotnet publish src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj \
+  -c Release -r linux-x64 --self-contained true \
+  -p:TorchBackend=rocm-linux -o artifacts/linux-x64-rocm
+```
+
+`fetch-libtorch-rocm.sh` 會下載 PyTorch 官方的 ROCm LibTorch
+（`2.10.0+rocm7.0`，ABI 與 TorchSharp 0.106 的 LibTorch 2.10 相符）到
+`~/.cache/llavon-lora`，共約 9.4 GB，內含 rocBLAS 與 hipBLASLt 的 kernel
+資料庫（不含 SDPA 使用的 aotriton 影像，本訓練器不使用 SDPA）。發佈時會把
+LibTorch 複製到輸出目錄（同一檔案系統會使用硬連結），因此產物約 9.5 GB，但
+執行時不需要額外參數；ROCm 的執行階段程式庫也一併內附，只需要顯示卡驅動程式。
+`TorchBackend=rocm-linux` 僅限 Linux。
+
+若想讓 LibTorch 留在應用程式目錄外，可改用 `--torch-lib-dir` 或
+`LLAVON_LORA_TORCH_LIB` 指向該目錄，並在沒有內附 LibTorch 的建置上執行
+（`TorchBackend=rocm-linux` 搭配尚未下載的 LibTorch 即屬此類）。已經內附
+LibTorch 的建置不能切換到另一份：同一個處理程序載入兩份 LibTorch 會因為重複
+註冊 kernel 而直接中止，CLI 會事先拒絕這種組合。
 
 若想縮小 Windows 安裝器的 payload，可改發佈 framework-dependent，並由安裝器
 提供 .NET 執行階段的前置需求：

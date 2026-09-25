@@ -147,8 +147,8 @@ public sealed record TrainConfig {
             throw new ArgumentException("--max-seq-length must be in [2, max_position_embeddings]");
         if (LearningRate <= 0 || WeightDecay < 0 || MaxGradientNorm < 0)
             throw new ArgumentException("invalid optimizer hyperparameter");
-        if (Device is not ("auto" or "cpu" or "cuda"))
-            throw new ArgumentException("--device must be auto, cpu, or cuda");
+        if (!DeviceSelection.IsSupported(Device))
+            throw new ArgumentException($"--device must be {string.Join(", ", DeviceSelection.Supported)}");
         if (DType is not ("float32" or "bfloat16"))
             throw new ArgumentException(
                 "--dtype must be float32 or bfloat16; float16 training requires FP32 optimizer master weights");
