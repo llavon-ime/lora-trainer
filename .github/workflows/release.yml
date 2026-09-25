@@ -287,6 +287,25 @@ jobs:
               --notes "Automated Asia/Taipei CalVer release from commit $GITHUB_SHA."
           fi
 
+      - name: Publish commit-addressed manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit_tag="commit-$GITHUB_SHA"
+          if gh release view "$commit_tag" >/dev/null 2>&1; then
+            target_commit="$(gh release view "$commit_tag" --json targetCommitish --jq .targetCommitish)"
+            if [[ "$target_commit" != "$GITHUB_SHA" ]]; then
+              echo "$commit_tag already exists for another commit: $target_commit" >&2
+              exit 1
+            fi
+          else
+            gh release create "$commit_tag" latest.json \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "Manifest for $GITHUB_SHA" \
+              --notes "Commit-addressed manifest for $RELEASE_TAG."
+          fi
+
       - name: Update rolling latest manifest
         shell: bash
         run: |
