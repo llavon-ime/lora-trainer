@@ -21,11 +21,15 @@ trainer 不含斷詞器、詞彙、特殊 token ID、注音表、候選字表或
   NVIDIA 驅動程式；macOS 產物內含啟用 MPS 的 LibTorch，因此 `--device mps`
   不需要額外下載；
 - CUDA 版本使用預先建置的 NuGet 二進位檔在本機發佈，建置時不需要 CUDA
-  Toolkit 或 NVCC，執行時需要相容的 NVIDIA 驅動程式；
+  Toolkit 或 NVCC，執行時需要相容的 NVIDIA 驅動程式。NVIDIA GPU 也可以使用
+  不含 LibTorch 的 `TorchBackend=cuda-linux-fetch` 建置，執行時由
+  `llavon-lora fetch-libtorch` 下載 PyTorch 官方的 CUDA LibTorch
+  （`2.10.0+cu128`，約 3.9 GB）到 `~/.cache/llavon-lora`；
 - AMD GPU 使用 ROCm：LibTorch 沒有 Vulkan 訓練後端，而 PyTorch 讓 ROCm 走
-  `cuda` 裝置名稱，因此 `--device cuda` 在 ROCm 版本上就是 AMD GPU。建置時會
-  下載 PyTorch 官方的 ROCm LibTorch（壓縮檔約 4.9 GB，解開後約 9.4 GB），
-  執行時需要支援的 AMD 顯示卡與驅動程式。
+  `cuda` 裝置名稱，因此 `--device cuda` 在 ROCm 版本上就是 AMD GPU。ROCm 建置
+  本身很小，PyTorch 官方的 ROCm LibTorch（解開後約 9.4 GB）由
+  `llavon-lora fetch-libtorch` 或 `scripts/fetch-libtorch-rocm.sh` 下載到
+  `~/.cache/llavon-lora`，之後 ROCm 建置會自動使用，不需要額外參數。
 
 TorchSharp 與預先建置的 LibTorch 二進位檔會從 NuGet 還原。CLI 可以發佈成
 self-contained，因此目標機器不需要 .NET 執行階段。Apple Silicon 建置會把
@@ -227,8 +231,16 @@ Linux CUDA 使用 `-p:TorchBackend=cuda-linux`。這些 CUDA 發佈會還原預�
 原生二進位檔，不會呼叫 NVCC。請分開發佈 CPU 與 CUDA 壓縮檔，不要把兩種後端
 合併。
 
-ROCm 也刻意不包含在自動發行中，原因相同（會多出數 GB）。AMD GPU 訓練請在本機
-發佈：
+ROCm 與 CUDA 的 LibTorch（分別約 9.4 GB 與 3.9 GB）不在自動發行中，但 release
+仍提供**不含 LibTorch** 的 `linux-x64-rocm` 與 `linux-x64-cuda` 產物
+（各約 30–40 MB）：安裝後由 `llavon-lora fetch-libtorch` 下載 PyTorch 官方的
+LibTorch（ROCm 為 `2.10.0+rocm7.0`，CUDA 為 `2.10.0+cu128`，ABI 都與
+TorchSharp 0.106 的 LibTorch 2.10 相符）到 `~/.cache/llavon-lora`，ROCm 版本
+內含 rocBLAS 與 hipBLASLt 的 kernel 資料庫（不含 SDPA 使用的 aotriton 影像，
+本訓練器不使用 SDPA）。兩者的執行階段程式庫都一併內附，只需要顯示卡驅動程式；
+之後對應的建置會自動使用該 cache，不需要任何參數。
+
+也可以自行發佈把 LibTorch 一起打包的完整版本：
 
 ```sh
 scripts/fetch-libtorch-rocm.sh
@@ -237,19 +249,12 @@ dotnet publish src/Llavon.Lora.Cli/Llavon.Lora.Cli.csproj \
   -p:TorchBackend=rocm-linux -o artifacts/linux-x64-rocm
 ```
 
-`fetch-libtorch-rocm.sh` 會下載 PyTorch 官方的 ROCm LibTorch
-（`2.10.0+rocm7.0`，ABI 與 TorchSharp 0.106 的 LibTorch 2.10 相符）到
-`~/.cache/llavon-lora`，共約 9.4 GB，內含 rocBLAS 與 hipBLASLt 的 kernel
-資料庫（不含 SDPA 使用的 aotriton 影像，本訓練器不使用 SDPA）。發佈時會把
-LibTorch 複製到輸出目錄（同一檔案系統會使用硬連結），因此產物約 9.5 GB，但
-執行時不需要額外參數；ROCm 的執行階段程式庫也一併內附，只需要顯示卡驅動程式。
-`TorchBackend=rocm-linux` 僅限 Linux。
-
+發佈時會把 LibTorch 複製到輸出目錄（同一檔案系統會使用硬連結），產物約 9.5 GB。
 若想讓 LibTorch 留在應用程式目錄外，可改用 `--torch-lib-dir` 或
-`LLAVON_LORA_TORCH_LIB` 指向該目錄，並在沒有內附 LibTorch 的建置上執行
-（`TorchBackend=rocm-linux` 搭配尚未下載的 LibTorch 即屬此類）。已經內附
-LibTorch 的建置不能切換到另一份：同一個處理程序載入兩份 LibTorch 會因為重複
-註冊 kernel 而直接中止，CLI 會事先拒絕這種組合。
+`LLAVON_LORA_TORCH_LIB` 指向該目錄，並在沒有內附 LibTorch 的建置上執行。
+已經內附 LibTorch 的建置不能切換到另一份：同一個處理程序載入兩份 LibTorch 會
+因為重複註冊 kernel 而直接中止，CLI 會事先拒絕這種組合。
+`TorchBackend=rocm-linux` 僅限 Linux。
 
 若想縮小 Windows 安裝器的 payload，可改發佈 framework-dependent，並由安裝器
 提供 .NET 執行階段的前置需求：

@@ -16,6 +16,8 @@ internal static class ProgramEntry {
 
           llavon-lora devices [--json]
 
+          llavon-lora fetch-libtorch --backend rocm|cuda [--output-dir DIR] [--force]
+
           llavon-lora train --model-config FILE --model FILE_OR_DIR --train-data FILE
               --output-dir DIR --pad-token-id ID --max-seq-length N
               --target-modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj [options]
@@ -56,6 +58,14 @@ internal static class ProgramEntry {
           --expected-outfile-sha256 HASH   Reject an unexpected unquantized artifact
           --expected-quantized-sha256 HASH Reject an unexpected quantized artifact
           --force                          Overwrite existing output files
+
+        GPU libtorch:
+          llavon-lora fetch-libtorch       Download the PyTorch libtorch build for
+                                           the named backend (the IME manager
+                                           detects the GPU and calls this) into
+                                           the per-user cache; builds without
+                                           bundled libraries use it without
+                                           further arguments
         """;
 
     public static int Run(string[] args) {
@@ -79,6 +89,7 @@ internal static class ProgramEntry {
                 "validate" => RunValidate(arguments),
                 "export-gguf" => RunExportGguf(arguments),
                 "devices" => RunDevices(arguments),
+                "fetch-libtorch" => RunFetchLibTorch(arguments),
                 _ => throw new ArgumentException($"unknown command: {args[0]}")
             };
         } catch (Exception exception) when (exception is not OutOfMemoryException) {
@@ -159,6 +170,25 @@ internal static class ProgramEntry {
                 return File.ReadAllText(candidate).Trim();
         }
         return null;
+    }
+
+    // Downloads the PyTorch libtorch build for the requested backend into the
+    // per-user cache, where builds without bundled libraries find it
+    // automatically. The IME manager detects the GPU and names the backend.
+    private static int RunFetchLibTorch(Arguments arguments) {
+        arguments.Allow("--output-dir", "--backend", "--force");
+        var backend = LibTorchDistribution.ForName(arguments.Required("--backend"));
+        var directory = LibTorchDistribution.Fetch(
+            backend,
+            arguments.Optional("--output-dir"),
+            arguments.Flag("--force"),
+            Console.WriteLine);
+        Console.WriteLine($"libtorch={directory}");
+        if (TorchNativeLibraries.BundlesLibTorch() && !TorchNativeLibraries.BundlesHipLibraries())
+            Console.Error.WriteLine(
+                "warning: this build bundles its own libtorch, so it cannot use the downloaded one; " +
+                "install the GPU build of the trainer instead");
+        return 0;
     }
 
     private static int RunTrain(Arguments arguments) {

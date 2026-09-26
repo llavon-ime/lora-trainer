@@ -132,6 +132,76 @@ public sealed class AcceleratorTests {
     }
 
     [Fact]
+    public void CachedLibTorchIsUsedWhenNothingIsBundled() {
+        var cacheRoot = Directory.CreateTempSubdirectory("llavon-cache-");
+        var application = Directory.CreateTempSubdirectory("llavon-clean-");
+        var bundled = CreateFakeLibTorch();
+        var previous = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
+        try {
+            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", cacheRoot.FullName);
+            var library = Path.Combine(TorchNativeLibraries.CacheRoot, "libtorch-rocm7.0-2.10.0", "libtorch", "lib");
+            Directory.CreateDirectory(library);
+            File.WriteAllText(Path.Combine(library, TorchNativeLibraries.LibraryFileName("libtorch_cpu")), "");
+            // A build without bundled libraries picks the cache up by itself.
+            Assert.Equal(Path.GetFullPath(library),
+                TorchNativeLibraries.ResolveDirectory(null, application.FullName));
+            // A build that ships its own libtorch must not load the cached one.
+            Assert.Null(TorchNativeLibraries.ResolveDirectory(null, bundled));
+        } finally {
+            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", previous);
+            Directory.Delete(cacheRoot.FullName, recursive: true);
+            Directory.Delete(application.FullName, recursive: true);
+            Directory.Delete(bundled, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("rocm", "libtorch/build-version", true)]
+    [InlineData("rocm", "libtorch/lib/libtorch_cpu.so", true)]
+    [InlineData("rocm", "libtorch/lib/libtorch_hip.so", true)]
+    [InlineData("rocm", "libtorch/lib/rocblas/library/TensileLibrary_lazy_gfx1201.dat", true)]
+    [InlineData("rocm", "libtorch/lib/hipblaslt/library/Kernels.so-000-gfx1201.hsaco", true)]
+    [InlineData("rocm", "libtorch/lib/hipsparselt/library/anything.dat", true)]
+    [InlineData("rocm", "libtorch/lib/libtorch_cpu.a", false)]
+    [InlineData("rocm", "libtorch/lib/aotriton.images/amd-gfx1201/anything.so", false)]
+    [InlineData("rocm", "libtorch/include/torch/torch.h", false)]
+    [InlineData("rocm", "libtorch/lib/", false)]
+    [InlineData("cuda", "libtorch/lib/libtorch_cuda.so", true)]
+    [InlineData("cuda", "libtorch/lib/libcudnn.so.9", true)]
+    [InlineData("cuda", "libtorch/lib/libcublasLt.so.12", true)]
+    [InlineData("cuda", "libtorch/lib/libtorch_cpu.a", false)]
+    [InlineData("cuda", "libtorch/lib/rocblas/library/TensileLibrary_lazy_gfx1201.dat", false)]
+    [InlineData("cuda", "libtorch/include/torch/torch.h", false)]
+    public void OnlyTheNeededLibTorchEntriesAreExtracted(string backend, string entry, bool needed) =>
+        Assert.Equal(needed, LibTorchDistribution.IsNeededEntry(LibTorchDistribution.ForName(backend), entry));
+
+    [Fact]
+    public void FetchLibTorchSkipsAnInstalledDirectory() {
+        if (!OperatingSystem.IsLinux())
+            return;
+        var root = Directory.CreateTempSubdirectory("llavon-fetch-");
+        try {
+            var library = Path.Combine(root.FullName, "libtorch", "lib");
+            Directory.CreateDirectory(library);
+            File.WriteAllText(Path.Combine(library, TorchNativeLibraries.LibraryFileName("libtorch_hip")), "");
+            foreach (var kernel in new[] { "rocblas/library", "hipblaslt/library", "hipsparselt/library" }) {
+                var path = Path.Combine(library, kernel);
+                Directory.CreateDirectory(path);
+                File.WriteAllText(Path.Combine(path, "kernel.dat"), "");
+            }
+            var messages = new List<string>();
+            var result = LibTorchDistribution.Fetch(LibTorchDistribution.Rocm, root.FullName, force: false, messages.Add);
+            Assert.Equal(library, result);
+            Assert.Contains(messages, message => message.Contains("already installed"));
+            // An interrupted extraction is not an installation.
+            File.Delete(Path.Combine(library, "rocblas", "library", "kernel.dat"));
+            Assert.False(LibTorchDistribution.IsInstalled(LibTorchDistribution.Rocm, library));
+        } finally {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public void CudaTrainingCompletesOneStep() {
         // Run on a machine with an AMD (ROCm) or NVIDIA GPU, in isolation so
         // that nothing loads the bundled libtorch first:
