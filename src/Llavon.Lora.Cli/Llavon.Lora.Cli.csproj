@@ -27,8 +27,8 @@
   </ItemGroup>
 
   <Target Name="ValidateTorchBackend" BeforeTargets="Restore;Build">
-    <Error Condition="'$(TorchBackend)' != 'cpu' and '$(TorchBackend)' != 'cuda-windows' and '$(TorchBackend)' != 'cuda-linux' and '$(TorchBackend)' != 'cuda-linux-fetch' and '$(TorchBackend)' != 'rocm-linux'"
-           Text="TorchBackend must be cpu, cuda-windows, cuda-linux, cuda-linux-fetch, or rocm-linux." />
+    <Error Condition="'$(TorchBackend)' != 'cpu' and '$(TorchBackend)' != 'cuda-windows' and '$(TorchBackend)' != 'cuda-linux' and '$(TorchBackend)' != 'rocm-linux'"
+           Text="TorchBackend must be cpu, cuda-windows, cuda-linux, or rocm-linux." />
     <Error Condition="'$(TorchBackend)' == 'rocm-linux' and !$([MSBuild]::IsOSPlatform('Linux'))"
            Text="TorchBackend=rocm-linux is only available on Linux." />
   </Target>

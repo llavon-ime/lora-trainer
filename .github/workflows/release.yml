@@ -74,20 +74,6 @@ jobs:
             rid: linux-x64
             backend: cpu
             format: tar.gz
-          # The GPU builds carry no libtorch: `install-trainer --backend auto`
-          # fetches the official PyTorch build for the detected GPU into the
-          # per-user cache, which keeps these assets small enough for the
-          # automatic release.
-          - id: linux-x64-rocm
-            os: ubuntu-latest
-            rid: linux-x64
-            backend: rocm-linux
-            format: tar.gz
-          - id: linux-x64-cuda
-            os: ubuntu-latest
-            rid: linux-x64
-            backend: cuda-linux-fetch
-            format: tar.gz
           - id: osx-arm64-cpu
             os: macos-latest
             rid: osx-arm64
@@ -153,7 +139,7 @@ jobs:
         run: Copy-Item LICENSE "artifacts/publish/$env:ARTIFACT_ID/LICENSE"
 
       - name: Smoke test native artifact
-        if: matrix.id == 'win-x64-cpu' || matrix.id == 'linux-x64-cpu' || matrix.id == 'linux-x64-rocm'
+        if: matrix.id == 'win-x64-cpu' || matrix.id == 'linux-x64-cpu'
         shell: bash
         run: |
           set -euo pipefail

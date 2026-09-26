@@ -53,67 +53,7 @@ public static class TorchNativeLibraries {
         var fromEnvironment = Environment.GetEnvironmentVariable(DirectoryVariable);
         if (!string.IsNullOrWhiteSpace(fromEnvironment))
             return ValidateAlternativeDirectory(fromEnvironment, application);
-        // ROCm builds ship libtorch_hip.so and must load their HIP libraries
-        // explicitly, whether they sit next to the application or, for
-        // single-file builds, in the extraction directory.
-        foreach (var directory in SearchDirectories(application))
-            if (HasHipLibraries(directory))
-                return directory;
-        // A build without bundled libraries picks up the libtorch installed by
-        // `llavon-lora fetch-libtorch`; builds that ship their own must not load
-        // a second one.
-        if (BundlesLibTorch(application))
-            return null;
-        return CachedLibTorchDirectory();
-    }
-
-    // The fetched libtorch, in the order the backends are declared.
-    private static string? CachedLibTorchDirectory() {
-        foreach (var backend in LibTorchDistribution.Backends) {
-            var directory = LibTorchDistribution.LibraryDirectory(backend);
-            if (File.Exists(Path.Combine(directory, LibraryFileName("libtorch_cpu"))))
-                return directory;
-        }
-        return null;
-    }
-
-    // Whether the application carries its own libtorch.
-    public static bool BundlesLibTorch() => BundlesLibTorch(AppContext.BaseDirectory);
-
-    // Whether the application carries the ROCm libraries itself.
-    public static bool BundlesHipLibraries() =>
-        SearchDirectories(AppContext.BaseDirectory).Any(HasHipLibraries);
-
-    private static bool BundlesLibTorch(string application) =>
-        SearchDirectories(application).Any(directory => File.Exists(
-            Path.Combine(directory, LibraryFileName("libtorch_cpu"))));
-
-    // Directories the runtime searches for native libraries. Single-file builds
-    // extract their bundled libraries elsewhere, so the application directory
-    // alone is not enough.
-    private static IEnumerable<string> SearchDirectories(string application) {
-        yield return application;
-        if (!IsSameDirectory(application, AppContext.BaseDirectory))
-            yield break;
-        if (AppContext.GetData("NATIVE_DLL_SEARCH_DIRECTORIES") is not string directories)
-            yield break;
-        foreach (var directory in directories.Split(
-                     [Path.PathSeparator, ';'], StringSplitOptions.RemoveEmptyEntries))
-            if (!string.IsNullOrWhiteSpace(directory))
-                yield return Path.GetFullPath(directory);
-    }
-
-    // Per-user cache root shared with scripts/fetch-libtorch-rocm.sh.
-    public static string CacheRoot {
-        get {
-            var xdg = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
-            if (!string.IsNullOrWhiteSpace(xdg))
-                return Path.Combine(xdg, "llavon-lora");
-            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            return OperatingSystem.IsMacOS()
-                ? Path.Combine(home, "Library", "Caches", "llavon-lora")
-                : Path.Combine(home, ".cache", "llavon-lora");
-        }
+        return HasHipLibraries(application) ? application : null;
     }
 
     public static string LibraryFileName(string stem) =>
@@ -132,7 +72,8 @@ public static class TorchNativeLibraries {
         // Two libtorch copies in one process abort on duplicate kernel
         // registration, so a build that ships its own copy cannot switch away
         // from it.
-        if (!IsSameDirectory(application, full) && BundlesLibTorch(application))
+        if (!IsSameDirectory(application, full) &&
+            File.Exists(Path.Combine(application, LibraryFileName("libtorch_cpu"))))
             throw new InvalidOperationException(
                 $"this build bundles a libtorch in {Path.TrimEndingDirectorySeparator(application)} and cannot load a " +
                 "second one; build with -p:TorchBackend=rocm-linux to use a ROCm libtorch, or use a build that does " +
