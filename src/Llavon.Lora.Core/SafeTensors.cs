@@ -14,15 +14,19 @@ public static class SafeTensors {
         WriteIndented = false
     };
 
-    public static Dictionary<string, Tensor> LoadModel(string modelPath) {
+    public static Dictionary<string, Tensor> LoadModel(string modelPath) => LoadModel(modelPath, null);
+
+    public static Dictionary<string, Tensor> LoadModel(
+        string modelPath,
+        IReadOnlySet<string>? wanted) {
         if (File.Exists(modelPath))
-            return LoadFile(modelPath, null);
+            return LoadFile(modelPath, wanted);
         if (!Directory.Exists(modelPath))
             throw new FileNotFoundException($"model path is neither a safetensors file nor a directory: {modelPath}");
 
         var singleFile = Path.Combine(modelPath, "model.safetensors");
         if (File.Exists(singleFile))
-            return LoadFile(singleFile, null);
+            return LoadFile(singleFile, wanted);
 
         var indexFile = Path.Combine(modelPath, "model.safetensors.index.json");
         if (!File.Exists(indexFile))
@@ -35,6 +39,8 @@ public static class SafeTensors {
 
         var byFile = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
         foreach (var property in weightMap.EnumerateObject()) {
+            if (wanted is not null && !wanted.Contains(property.Name))
+                continue;
             var fileName = property.Value.GetString() ?? throw new InvalidDataException("null shard filename");
             if (!byFile.TryGetValue(fileName, out var names)) {
                 names = new HashSet<string>(StringComparer.Ordinal);

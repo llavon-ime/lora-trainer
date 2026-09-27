@@ -176,6 +176,147 @@ public sealed class TrainerTests {
     }
 
     [Fact]
+    public void SafeTensorsCanLoadOnlyRequestedWeights() {
+        var path = TemporaryPath(".safetensors");
+        using var wanted = torch.ones(2, 2);
+        using var ignored = torch.zeros(3, 3);
+        try {
+            SafeTensors.Save(path, new Dictionary<string, Tensor> {
+                ["wanted.weight"] = wanted,
+                ["ignored.weight"] = ignored
+            });
+
+            var loaded = SafeTensors.LoadModel(
+                path,
+                new HashSet<string>(StringComparer.Ordinal) { "wanted.weight" });
+            try {
+                Assert.Single(loaded);
+                Assert.Contains("wanted.weight", loaded);
+            } finally {
+                foreach (var tensor in loaded.Values)
+                    tensor.Dispose();
+            }
+        } finally {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void SpectralAnalysisFindsAHighRankingIntruderDimension() {
+        using var singularValues = torch.arange(8, 0, -1, dtype: ScalarType.Float32);
+        using var baseWeight = torch.diag(singularValues);
+        using var direction = torch.ones(8, dtype: ScalarType.Float32) / Math.Sqrt(8);
+        using var adapterA = direction.unsqueeze(0) * 10;
+        using var adapterB = direction.unsqueeze(1) * 10;
+
+        var result = SpectralAnalyzer.AnalyzeMatrix(
+            "projection.weight", baseWeight, adapterA, adapterB, 1, 1, 0.5);
+
+        var intruder = Assert.Single(result.IntruderDimensions);
+        Assert.Equal(1, intruder.Rank);
+        Assert.True(intruder.MaxAbsoluteCosineSimilarity < 0.5);
+        Assert.True(intruder.SingularValue > 100);
+    }
+
+    [Fact]
+    public void SpectralAnalysisDoesNotMisclassifyAnUnchangedWeight() {
+        using var singularValues = torch.arange(8, 0, -1, dtype: ScalarType.Float32);
+        using var baseWeight = torch.diag(singularValues);
+        using var adapterA = torch.ones(1, 8);
+        using var adapterB = torch.zeros(8, 1);
+
+        var result = SpectralAnalyzer.AnalyzeMatrix(
+            "projection.weight", baseWeight, adapterA, adapterB, 1, 3, 0.5);
+
+        Assert.Empty(result.IntruderDimensions);
+        Assert.All(result.MaxAbsoluteCosineSimilarities, similarity => Assert.True(similarity > 0.999));
+    }
+
+    [Fact]
+    public void StabilizationScalesTheTopIntruderAndRemainsALowRankAdapter() {
+        using var singularValues = torch.arange(8, 0, -1, dtype: ScalarType.Float32);
+        using var baseWeight = torch.diag(singularValues);
+        using var direction = torch.ones(8, dtype: ScalarType.Float32) / Math.Sqrt(8);
+        using var adapterA = direction.unsqueeze(0) * 10;
+        using var adapterB = direction.unsqueeze(1) * 10;
+        using var original = baseWeight + torch.matmul(adapterB, adapterA);
+        var (u, values, vh) = torch.linalg.svd(original, fullMatrices: false);
+        using (u)
+        using (values)
+        using (vh)
+        using (var topComponent = torch.matmul(u.narrow(1, 0, 1), vh.narrow(0, 0, 1)) * values[0])
+        using (var expected = original - topComponent * 0.5)
+        using (var stabilized = SpectralAnalyzer.StabilizeMatrix(
+                   "projection.weight", baseWeight, adapterA, adapterB, 1, 1, 0.5, 0.5))
+        using (var actual = baseWeight + torch.matmul(stabilized.AdapterB, stabilized.AdapterA)) {
+            Assert.Equal([2L, 8L], stabilized.AdapterA.shape);
+            Assert.Equal([8L, 2L], stabilized.AdapterB.shape);
+            Assert.True(torch.allclose(expected, actual, rtol: 1e-5, atol: 1e-5));
+        }
+    }
+
+    [Fact]
+    public void StabilizationWritesADirectlyUsablePeftAdapter() {
+        var root = Path.Combine(Path.GetTempPath(), $"llavon-stabilize-{Guid.NewGuid():N}");
+        var modelPath = Path.Combine(root, "model.safetensors");
+        var adapterDirectory = Path.Combine(root, "adapter");
+        var outputDirectory = Path.Combine(root, "stabilized");
+        Directory.CreateDirectory(adapterDirectory);
+        using var singularValues = torch.arange(8, 0, -1, dtype: ScalarType.Float32);
+        using var baseWeight = torch.diag(singularValues);
+        using var direction = torch.ones(8, dtype: ScalarType.Float32) / Math.Sqrt(8);
+        using var adapterA = direction.unsqueeze(0) * 10;
+        using var adapterB = direction.unsqueeze(1) * 10;
+        try {
+            SafeTensors.Save(modelPath, new Dictionary<string, Tensor> {
+                ["projection.weight"] = baseWeight
+            });
+            SafeTensors.Save(
+                Path.Combine(adapterDirectory, "adapter_model.safetensors"),
+                new Dictionary<string, Tensor> {
+                    ["base_model.model.projection.lora_A.weight"] = adapterA,
+                    ["base_model.model.projection.lora_B.weight"] = adapterB
+                });
+            File.WriteAllText(
+                Path.Combine(adapterDirectory, "adapter_config.json"),
+                """
+                {"base_model_name_or_path":"model","bias":"none","fan_in_fan_out":false,"inference_mode":true,"lora_alpha":1,"lora_dropout":0,"peft_type":"LORA","r":1,"target_modules":["projection"],"task_type":"CAUSAL_LM"}
+                """);
+            File.WriteAllText(
+                Path.Combine(adapterDirectory, "training_state.json"),
+                """{"step":7,"loss":0.25,"learning_rate":0.0001}""");
+
+            var result = SpectralAnalyzer.Stabilize(new SpectralStabilizationConfig {
+                ModelPath = modelPath,
+                AdapterDirectory = adapterDirectory,
+                OutputDirectory = outputDirectory,
+                TopK = 1,
+                SimilarityThreshold = 0.5,
+                IntruderScale = 0.9
+            });
+
+            Assert.Equal(1, result.ScaledIntruderCount);
+            Assert.Equal(2, result.StabilizedRank);
+            var config = AdapterConfig.Load(outputDirectory);
+            Assert.Equal(2, config.Rank);
+            Assert.Equal(2, config.Alpha);
+            Assert.True(File.Exists(Path.Combine(outputDirectory, "stabilization_state.json")));
+            Assert.True(File.Exists(Path.Combine(outputDirectory, "training_state.json")));
+            var tensors = SafeTensors.LoadModel(Path.Combine(outputDirectory, "adapter_model.safetensors"));
+            try {
+                Assert.Equal([2L, 8L], tensors["base_model.model.projection.lora_A.weight"].shape);
+                Assert.Equal([8L, 2L], tensors["base_model.model.projection.lora_B.weight"].shape);
+            } finally {
+                foreach (var tensor in tensors.Values)
+                    tensor.Dispose();
+            }
+        } finally {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void TinyLlamaTrainsAndWritesPeftAdapter() {
         var root = Path.Combine(Path.GetTempPath(), $"llavon-lora-{Guid.NewGuid():N}");
         var modelDirectory = Path.Combine(root, "model");

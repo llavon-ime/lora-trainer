@@ -22,13 +22,18 @@ internal static class ProgramEntry {
 
           llavon-lora validate --train-data FILE --vocab-size N --max-seq-length N
 
+          llavon-lora analyze-spectrum --model FILE_OR_DIR --adapter DIR [options]
+
+          llavon-lora stabilize-adapter --model FILE_OR_DIR --adapter DIR
+              --output-dir DIR [options]
+
           llavon-lora export-gguf --model-config FILE --model FILE_OR_DIR --vocab-file FILE
               --outfile FILE [--adapter DIR] [--outtype f16|f32]
               [--quantize TYPE --quantized-outfile FILE] [options]
 
         Training options:
           --rank N                         LoRA rank (default: 16)
-          --alpha X                        LoRA alpha (default: 32)
+          --alpha X                        LoRA alpha (default: 2 * rank)
           --dropout X                      LoRA dropout (default: 0)
           --batch-size N                   Samples per micro-batch (default: 1)
           --gradient-accumulation N        Micro-batches per optimizer step (default: 1)
@@ -46,6 +51,16 @@ internal static class ProgramEntry {
           --dtype float32|bfloat16         Model compute dtype (default: float32)
           --seed N                         RNG seed (default: 42)
           --no-shuffle                     Preserve JSONL order
+
+        Spectral analysis options:
+          --top-k N                        Leading singular vectors per matrix (default: 10)
+          --epsilon X                      Intruder cosine threshold (default: 0.5)
+          --json                           Write the complete machine-readable report
+
+        Adapter stabilization options:
+          --scale X                        Scale the top intruder in each matrix (default: 0.9)
+          --output-dir DIR                 Write a directly usable stabilized PEFT adapter
+          --force                          Overwrite stabilization output files
 
         GGUF export options:
           --adapter DIR                    Optional PEFT LoRA adapter to merge
@@ -77,6 +92,8 @@ internal static class ProgramEntry {
             return args[0] switch {
                 "train" => RunTrain(arguments),
                 "validate" => RunValidate(arguments),
+                "analyze-spectrum" => RunAnalyzeSpectrum(arguments),
+                "stabilize-adapter" => RunStabilizeAdapter(arguments),
                 "export-gguf" => RunExportGguf(arguments),
                 "devices" => RunDevices(arguments),
                 _ => throw new ArgumentException($"unknown command: {args[0]}")
@@ -173,6 +190,7 @@ internal static class ProgramEntry {
         var targets = arguments.Required("--target-modules")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToHashSet(StringComparer.Ordinal);
+        var rank = arguments.Integer("--rank", 16);
         var config = new TrainConfig {
             ModelConfigPath = arguments.Required("--model-config"),
             ModelPath = arguments.Required("--model"),
@@ -182,8 +200,8 @@ internal static class ProgramEntry {
             TargetModules = targets,
             PadTokenId = arguments.Integer("--pad-token-id", required: true),
             MaxSequenceLength = arguments.Integer("--max-seq-length", required: true),
-            Rank = arguments.Integer("--rank", 16),
-            Alpha = arguments.Real("--alpha", 32),
+            Rank = rank,
+            Alpha = arguments.Real("--alpha", checked(2 * rank)),
             Dropout = arguments.Real("--dropout", 0),
             BatchSize = checked((int)arguments.Integer("--batch-size", 1)),
             GradientAccumulationSteps = checked((int)arguments.Integer("--gradient-accumulation", 1)),
@@ -201,6 +219,65 @@ internal static class ProgramEntry {
         };
         TorchNativeLibraries.Initialize(arguments.Optional("--torch-lib-dir"));
         Trainer.Train(config);
+        return 0;
+    }
+
+    private static int RunAnalyzeSpectrum(Arguments arguments) {
+        arguments.Allow("--model", "--adapter", "--top-k", "--epsilon", "--torch-lib-dir", "--json");
+        TorchNativeLibraries.Initialize(arguments.Optional("--torch-lib-dir"));
+        var result = SpectralAnalyzer.Analyze(new SpectralAnalysisConfig {
+            ModelPath = arguments.Required("--model"),
+            AdapterDirectory = arguments.Required("--adapter"),
+            TopK = checked((int)arguments.Integer("--top-k", 10)),
+            SimilarityThreshold = arguments.Real("--epsilon", 0.5)
+        });
+
+        if (arguments.Flag("--json")) {
+            Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                WriteIndented = true
+            }));
+            return 0;
+        }
+
+        Console.WriteLine(
+            $"intruders={result.IntruderCount}/{result.ExaminedDimensions} " +
+            $"matrices={result.ExaminedMatrices} rank={result.Rank} alpha={result.Alpha:G} " +
+            $"scaling={result.Scaling:G} top_k={result.TopK} epsilon={result.SimilarityThreshold:G}");
+        foreach (var matrix in result.Matrices.Where(matrix => matrix.IntruderCount != 0)) {
+            var ranks = string.Join(',', matrix.IntruderDimensions.Select(dimension => dimension.Rank));
+            Console.WriteLine($"{matrix.Weight} intruders={matrix.IntruderCount} ranks={ranks}");
+        }
+        return 0;
+    }
+
+    private static int RunStabilizeAdapter(Arguments arguments) {
+        arguments.Allow(
+            "--model", "--adapter", "--output-dir", "--top-k", "--epsilon", "--scale",
+            "--torch-lib-dir", "--force", "--json");
+        TorchNativeLibraries.Initialize(arguments.Optional("--torch-lib-dir"));
+        var result = SpectralAnalyzer.Stabilize(new SpectralStabilizationConfig {
+            ModelPath = arguments.Required("--model"),
+            AdapterDirectory = arguments.Required("--adapter"),
+            OutputDirectory = arguments.Required("--output-dir"),
+            TopK = checked((int)arguments.Integer("--top-k", 10)),
+            SimilarityThreshold = arguments.Real("--epsilon", 0.5),
+            IntruderScale = arguments.Real("--scale", 0.9),
+            Overwrite = arguments.Flag("--force")
+        });
+
+        if (arguments.Flag("--json")) {
+            Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                WriteIndented = true
+            }));
+            return 0;
+        }
+
+        Console.WriteLine(
+            $"wrote={result.OutputDirectory} scaled_intruders={result.ScaledIntruderCount} " +
+            $"scale={result.IntruderScale:G} rank={result.OriginalRank}->{result.StabilizedRank} " +
+            $"alpha={result.OriginalAlpha:G}->{result.StabilizedAlpha:G}");
         return 0;
     }
 

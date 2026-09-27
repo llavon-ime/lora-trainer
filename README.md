@@ -151,9 +151,62 @@ ROCm）、MPS 與 CPU；`mps` 只在 Apple Silicon 的 macOS 上可用，且目�
 學習率在選用的線性 warmup 之後保持固定。`--max-steps` 只會停止訓練，不會產生
 cosine decay 週期。
 
+若省略 `--alpha`，CLI 會使用 `2 * rank`。這遵循 Shuttleworth 等人的頻譜分析
+建議；明確傳入 `--alpha` 仍可覆寫，方便做控制實驗。
+
 輸出包含 `adapter_model.safetensors`、`adapter_config.json` 與
 `training_state.json`。adapter 名稱與設定遵循 PEFT 的 Llama LoRA 慣例。基礎
 權重保持凍結，不會複製到 adapter。
+
+## 降低 LoRA 遺忘
+
+`stabilize-adapter` 直接套用論文的介入公式：找出每個權重矩陣排名最高的 intruder
+dimension，將其奇異值乘上 `scale`。預設 `scale=0.9` 是論文測試中對下游表現影響
+較保守的設定。輸出仍是一般 PEFT LoRA adapter，可直接交給 `export-gguf` 或載入
+推論，不需要修改基礎模型。
+
+```powershell
+llavon-lora stabilize-adapter `
+  --model model `
+  --adapter output/ime-lora `
+  --output-dir output/ime-lora-stabilized `
+  --scale 0.9
+
+llavon-lora export-gguf `
+  --model-config model/config.json `
+  --model model `
+  --vocab-file ime_vocab.json `
+  --adapter output/ime-lora-stabilized `
+  --outfile output/ime-lora-stabilized-f16.gguf
+```
+
+為了精確表示介入後的矩陣，若找到 intruder，輸出 adapter 的 rank 會增加 1，並
+同步調整 alpha 以保持原本的 `alpha / rank` scaling；沒有找到 intruder 時則原樣
+輸出。`stabilization_state.json` 會記錄所有被檢查的矩陣與實際介入數量。建議仍用
+驗證集比較原始與 stabilized adapter，再決定部署版本。
+
+### 頻譜診斷
+
+`analyze-spectrum` 實作論文 *LoRA vs Full Fine-tuning: An Illusion of
+Equivalence* 的 intruder dimension 檢測。它先依 `alpha / rank` 把 adapter merge
+到每個基礎投影，再比較 fine-tuned 與 pre-trained 權重的左奇異向量。若某個
+fine-tuned 奇異向量與所有 pre-trained 奇異向量的最大絕對 cosine similarity
+小於 `epsilon`，即計為 intruder dimension。預設值對應論文的 `top-k=10` 與
+`epsilon=0.5`。
+
+```powershell
+llavon-lora analyze-spectrum `
+  --model model `
+  --adapter output/ime-lora `
+  --top-k 10 `
+  --epsilon 0.5 `
+  --json > output/ime-lora/spectral-report.json
+```
+
+文字模式會輸出總數及含 intruder 的矩陣；`--json` 會另外包含每個 top-k 維度的
+最大 cosine、intruder rank 與奇異值。比較下游分數相近的 adapters 時，可依論文
+建議優先選 intruder 較少者。SVD 在 CPU 以 float32 執行，且分片 checkpoint 只會
+載入 adapter 實際作用的權重，但大型模型仍可能需要較長分析時間。
 
 ## 匯出 GGUF
 
