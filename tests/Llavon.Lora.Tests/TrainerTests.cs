@@ -87,6 +87,48 @@ public sealed class TrainerTests {
     }
 
     [Fact]
+    public void RememberedCheckUsesCandidateConstrainedArgmax() {
+        using var batch = new TrainingBatch {
+            Tokens = torch.tensor(new long[,] { { 0, 1, 2 } }),
+            Labels = torch.tensor(new long[,] { { -100, 1, 2 } }),
+            LossWeights = torch.tensor(new float[,] { { 0, 1, 1 } }),
+            AttentionMask = torch.tensor(new bool[,] { { true, true, true } }),
+            CandidateMasks = new List<IReadOnlyList<long[]?>> {
+                new long[]?[] { null, [1, 3], [2, 4] }
+            }
+        };
+        using var logits = torch.zeros(1, 3, 5, dtype: ScalarType.Float32);
+        logits[0, 0, 1] = 2;
+        logits[0, 0, 3] = 1;
+        logits[0, 1, 2] = 1;
+        logits[0, 1, 4] = 2;
+
+        Assert.Equal(1, Trainer.CountIncorrectPredictions(logits, batch));
+        logits[0, 1, 2] = 3;
+        Assert.Equal(0, Trainer.CountIncorrectPredictions(logits, batch));
+    }
+
+    [Fact]
+    public void ConflictCheckOnlyReportsDifferentTargetsForTheSameInput() {
+        static TrainingSample Sample(long[] tokens) => new(
+            tokens,
+            [-100, -100, tokens[2]],
+            [0, 0, 1],
+            [true, true, true],
+            new long[]?[] { null, null, [3, 4] });
+
+        Assert.Equal(0, Dataset.CountConflictingTargets([
+            Sample([1, 2, 3]),
+            Sample([1, 2, 3]),
+            Sample([1, 5, 4])
+        ]));
+        Assert.Equal(1, Dataset.CountConflictingTargets([
+            Sample([1, 2, 3]),
+            Sample([1, 2, 4])
+        ]));
+    }
+
+    [Fact]
     public void GradientAccumulationAveragesTheActualTailSize() {
         using var parameter = torch.nn.Parameter(torch.tensor(2f));
         using var loss = parameter * 3;

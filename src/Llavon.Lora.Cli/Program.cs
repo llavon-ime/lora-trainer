@@ -51,6 +51,7 @@ internal static class ProgramEntry {
           --dtype float32|bfloat16         Model compute dtype (default: float32)
           --seed N                         RNG seed (default: 42)
           --no-shuffle                     Preserve JSONL order
+          --train-until-remembered          Repeat epochs until every target is predicted
 
         Spectral analysis options:
           --top-k N                        Leading singular vectors per matrix (default: 10)
@@ -185,7 +186,7 @@ internal static class ProgramEntry {
             "--pad-token-id", "--max-seq-length", "--rank", "--alpha", "--dropout", "--batch-size",
             "--gradient-accumulation", "--epochs", "--max-steps", "--learning-rate", "--weight-decay",
             "--warmup-steps", "--max-grad-norm", "--save-every", "--device", "--dtype", "--seed",
-            "--torch-lib-dir", "--no-shuffle");
+            "--torch-lib-dir", "--no-shuffle", "--train-until-remembered");
 
         var targets = arguments.Required("--target-modules")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -215,7 +216,8 @@ internal static class ProgramEntry {
             Device = arguments.Value("--device", "auto"),
             DType = arguments.Value("--dtype", "float32"),
             Seed = arguments.Integer("--seed", 42),
-            Shuffle = !arguments.Flag("--no-shuffle")
+            Shuffle = !arguments.Flag("--no-shuffle"),
+            TrainUntilRemembered = arguments.Flag("--train-until-remembered")
         };
         TorchNativeLibraries.Initialize(arguments.Optional("--torch-lib-dir"));
         Trainer.Train(config);

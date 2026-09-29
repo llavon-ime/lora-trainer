@@ -7,6 +7,41 @@ using static TorchSharp.torch;
 namespace Llavon.Lora;
 
 public static class Trainer {
+    public static long CountIncorrectPredictions(Tensor logits, TrainingBatch batch) {
+        if (logits.dim() != 3 || logits.shape[0] != batch.Labels.shape[0] ||
+            logits.shape[1] != batch.Labels.shape[1])
+            throw new ArgumentException("logits and labels shapes do not match");
+
+        long incorrect = 0;
+        for (var row = 0; row < batch.CandidateMasks.Count; ++row) {
+            for (var position = 1; position < batch.CandidateMasks[row].Count; ++position) {
+                using var labelTensor = batch.Labels[row, position];
+                using var weightTensor = batch.LossWeights[row, position];
+                using var attentionTensor = batch.AttentionMask[row, position];
+                var expected = labelTensor.item<long>();
+                if (expected == -100 || weightTensor.item<float>() <= 0 ||
+                    !attentionTensor.item<bool>())
+                    continue;
+
+                using var positionLogits = logits[row, position - 1];
+                long predicted;
+                if (batch.CandidateMasks[row][position] is { } candidates) {
+                    using var ids = torch.tensor(
+                        candidates, dtype: ScalarType.Int64, device: logits.device);
+                    using var candidateLogits = positionLogits.index_select(0, ids);
+                    using var selected = candidateLogits.argmax();
+                    predicted = candidates[selected.item<long>()];
+                } else {
+                    using var selected = positionLogits.argmax();
+                    predicted = selected.item<long>();
+                }
+                if (predicted != expected)
+                    ++incorrect;
+            }
+        }
+        return incorrect;
+    }
+
     public static Tensor CandidateConstrainedLoss(Tensor logits, TrainingBatch batch) {
         if (logits.dim() != 3 || batch.Labels.dim() != 2 || batch.LossWeights.dim() != 2)
             throw new ArgumentException("invalid logits or batch rank");
@@ -163,6 +198,15 @@ public static class Trainer {
         var modelConfig = ModelConfig.Load(config.ModelConfigPath);
         config.Validate(modelConfig);
         var samples = Dataset.LoadJsonLines(config.TrainDataPath, modelConfig.VocabSize, config.MaxSequenceLength);
+        if (config.TrainUntilRemembered) {
+            var conflicts = Dataset.CountConflictingTargets(samples);
+            if (conflicts != 0) {
+                Console.Error.WriteLine(
+                    $"warning: training data has {conflicts} conflicting input target(s)");
+                throw new InvalidDataException(
+                    "train-until-remembered cannot continue because the same input has different answers");
+            }
+        }
 
         torch.manual_seed(config.Seed);
         var device = DeviceSelection.Resolve(config.Device);
@@ -195,10 +239,17 @@ public static class Trainer {
         var batchesPerEpoch = (samples.Count + config.BatchSize - 1) / config.BatchSize;
         var updatesPerEpoch = (batchesPerEpoch + config.GradientAccumulationSteps - 1) /
                               config.GradientAccumulationSteps;
-        var totalSteps = config.MaxSteps > 0 ? config.MaxSteps : (long)updatesPerEpoch * config.Epochs;
+        var totalSteps = config.MaxSteps > 0
+            ? config.MaxSteps
+            : config.TrainUntilRemembered
+                ? long.MaxValue
+                : (long)updatesPerEpoch * config.Epochs;
+        var totalStepsLabel = config.TrainUntilRemembered && config.MaxSteps < 0
+            ? "until-remembered"
+            : totalSteps.ToString(CultureInfo.InvariantCulture);
 
         Console.WriteLine(
-            $"samples={samples.Count} trainable_parameters={trainableCount} optimizer_steps={totalSteps} " +
+            $"samples={samples.Count} trainable_parameters={trainableCount} optimizer_steps={totalStepsLabel} " +
             $"device={device} dtype={config.DType}");
 
         Directory.CreateDirectory(config.OutputDirectory);
@@ -207,8 +258,16 @@ public static class Trainer {
         var accumulated = 0;
         double accumulatedLoss = 0;
         double lastMeanLoss = 0;
+        var remembered = config.TrainUntilRemembered &&
+            CountIncorrectPredictions(model, samples, config.BatchSize, config.PadTokenId, device) == 0;
+        if (remembered)
+            Console.WriteLine("remembered=true incorrect=0 epoch=0");
 
-        for (var epoch = 0; epoch < config.Epochs && globalStep < totalSteps; ++epoch) {
+        for (long epoch = 0;
+             (!config.TrainUntilRemembered && epoch < config.Epochs ||
+              config.TrainUntilRemembered && !remembered) &&
+             globalStep < totalSteps;
+             ++epoch) {
             if (config.Shuffle)
                 Shuffle(order, random);
 
@@ -244,7 +303,7 @@ public static class Trainer {
 
                 lastMeanLoss = accumulatedLoss / accumulated;
                 Console.WriteLine(
-                    $"step={globalStep}/{totalSteps} epoch={epoch + 1} " +
+                    $"step={globalStep}/{totalStepsLabel} epoch={epoch + 1} " +
                     $"loss={lastMeanLoss.ToString("G9", CultureInfo.InvariantCulture)} " +
                     $"lr={learningRate.ToString("G9", CultureInfo.InvariantCulture)}");
                 accumulated = 0;
@@ -256,12 +315,50 @@ public static class Trainer {
                     WriteTrainingState(checkpoint, globalStep, lastMeanLoss, learningRate);
                 }
             }
+
+            if (config.TrainUntilRemembered) {
+                var incorrect = CountIncorrectPredictions(
+                    model, samples, config.BatchSize, config.PadTokenId, device);
+                remembered = incorrect == 0;
+                Console.WriteLine(
+                    $"remembered={remembered.ToString().ToLowerInvariant()} " +
+                    $"incorrect={incorrect} epoch={epoch + 1}");
+            }
         }
+
+        if (config.TrainUntilRemembered && !remembered)
+            throw new InvalidOperationException(
+                $"max steps reached with training targets still incorrect ({globalStep} steps)");
 
         model.SavePeftAdapter(config.OutputDirectory, config.ModelPath);
         var finalLearningRate = ScheduledLearningRate(config, Math.Max(0, globalStep - 1));
         WriteTrainingState(config.OutputDirectory, globalStep, lastMeanLoss, finalLearningRate);
         Console.WriteLine($"adapter saved to {config.OutputDirectory}");
+    }
+
+    private static long CountIncorrectPredictions(
+        LlamaForCausalLm model,
+        IReadOnlyList<TrainingSample> samples,
+        int batchSize,
+        long padTokenId,
+        Device device) {
+        model.eval();
+        try {
+            using var noGrad = torch.no_grad();
+            long incorrect = 0;
+            for (var begin = 0; begin < samples.Count; begin += batchSize) {
+                var end = Math.Min(samples.Count, begin + batchSize);
+                var indices = Enumerable.Range(begin, end - begin).ToArray();
+                using var batch = Dataset.MakeBatch(samples, indices, padTokenId);
+                using var deviceTokens = batch.Tokens.to(device);
+                using var deviceAttention = batch.AttentionMask.to(device);
+                using var logits = model.call(deviceTokens, deviceAttention);
+                incorrect += CountIncorrectPredictions(logits, batch);
+            }
+            return incorrect;
+        } finally {
+            model.train();
+        }
     }
 
     internal static void AverageAccumulatedGradients(

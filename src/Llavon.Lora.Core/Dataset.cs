@@ -28,6 +28,30 @@ public sealed class TrainingBatch : IDisposable {
 }
 
 public static class Dataset {
+    public static int CountConflictingTargets(IReadOnlyList<TrainingSample> samples) {
+        var targets = new Dictionary<string, long>(StringComparer.Ordinal);
+        var conflicts = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var sample in samples) {
+            for (var position = 1; position < sample.Tokens.Length; ++position) {
+                if (!sample.AttentionMask[position] || sample.Labels[position] == -100 ||
+                    sample.LossWeights[position] <= 0)
+                    continue;
+
+                // A causal model sees exactly this token prefix when predicting
+                // the label at position. Different labels for the same prefix
+                // cannot both be remembered.
+                var key = string.Join(',', sample.Tokens.Take(position));
+                if (targets.TryGetValue(key, out var target)) {
+                    if (target != sample.Labels[position])
+                        conflicts.Add(key);
+                } else {
+                    targets.Add(key, sample.Labels[position]);
+                }
+            }
+        }
+        return conflicts.Count;
+    }
+
     public static IReadOnlyList<TrainingSample> LoadJsonLines(
         string path,
         long vocabularySize,

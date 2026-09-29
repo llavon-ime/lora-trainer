@@ -151,6 +151,11 @@ ROCm）、MPS 與 CPU；`mps` 只在 Apple Silicon 的 macOS 上可用，且目�
 學習率在選用的線性 warmup 之後保持固定。`--max-steps` 只會停止訓練，不會產生
 cosine decay 週期。
 
+`--train-until-remembered` 會在每一輪後以候選字限制重新檢查全部訓練位置，直到
+每個目標字都是最高分候選才停止。若同一個 causal input prefix 對應不同答案，
+訓練器會輸出警告並停止，避免無法收斂的無限訓練；明確設定的 `--max-steps` 仍是
+安全上限。
+
 若省略 `--alpha`，CLI 會使用 `2 * rank`。這遵循 Shuttleworth 等人的頻譜分析
 建議；明確傳入 `--alpha` 仍可覆寫，方便做控制實驗。
 
