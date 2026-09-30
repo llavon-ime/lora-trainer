@@ -7,12 +7,40 @@ using static TorchSharp.torch;
 namespace Llavon.Lora;
 
 public static class Trainer {
-    public static long CountIncorrectPredictions(Tensor logits, TrainingBatch batch) {
+    internal readonly record struct TrainingMode(
+        bool ValidatesEveryEpoch,
+        bool RepeatsUntilRemembered,
+        bool MasksCorrectPositions) {
+        public bool ShouldContinue(long epoch, int epochs, bool remembered) =>
+            RepeatsUntilRemembered ? !remembered : epoch < epochs;
+    }
+
+    internal static TrainingMode ResolveTrainingMode(
+        bool trainUntilRemembered,
+        bool onlyTrainIncorrect) => new(
+            trainUntilRemembered || onlyTrainIncorrect,
+            trainUntilRemembered,
+            onlyTrainIncorrect);
+
+    public static long CountIncorrectPredictions(Tensor logits, TrainingBatch batch) =>
+        EvaluatePredictions(logits, batch).IncorrectPredictions;
+
+    internal static bool[][] FindIncorrectPredictionPositions(Tensor logits, TrainingBatch batch) =>
+        EvaluatePredictions(logits, batch).IncorrectPositions;
+
+    private static (
+        long IncorrectPredictions,
+        bool[][] IncorrectPositions) EvaluatePredictions(
+        Tensor logits,
+        TrainingBatch batch) {
         if (logits.dim() != 3 || logits.shape[0] != batch.Labels.shape[0] ||
             logits.shape[1] != batch.Labels.shape[1])
             throw new ArgumentException("logits and labels shapes do not match");
 
-        long incorrect = 0;
+        long incorrectPredictions = 0;
+        var incorrectPositions = batch.CandidateMasks
+            .Select(row => new bool[row.Count])
+            .ToArray();
         for (var row = 0; row < batch.CandidateMasks.Count; ++row) {
             for (var position = 1; position < batch.CandidateMasks[row].Count; ++position) {
                 using var labelTensor = batch.Labels[row, position];
@@ -35,12 +63,19 @@ public static class Trainer {
                     using var selected = positionLogits.argmax();
                     predicted = selected.item<long>();
                 }
-                if (predicted != expected)
-                    ++incorrect;
+                if (predicted == expected)
+                    continue;
+                ++incorrectPredictions;
+                incorrectPositions[row][position] = true;
             }
         }
-        return incorrect;
+        return (incorrectPredictions, incorrectPositions);
     }
+
+    internal static int[] SelectSamplesForTraining(
+        IReadOnlyList<int> order,
+        IReadOnlyList<bool[]> incorrectPositions) =>
+        order.Where(index => incorrectPositions[index].Any(incorrect => incorrect)).ToArray();
 
     public static Tensor CandidateConstrainedLoss(Tensor logits, TrainingBatch batch) {
         if (logits.dim() != 3 || batch.Labels.dim() != 2 || batch.LossWeights.dim() != 2)
@@ -258,23 +293,36 @@ public static class Trainer {
         var accumulated = 0;
         double accumulatedLoss = 0;
         double lastMeanLoss = 0;
-        var remembered = config.TrainUntilRemembered &&
-            CountIncorrectPredictions(model, samples, config.BatchSize, config.PadTokenId, device) == 0;
-        if (remembered)
-            Console.WriteLine("remembered=true incorrect=0 epoch=0");
+        bool[][]? incorrectPositions = null;
+        var remembered = false;
+        var trainingMode = ResolveTrainingMode(
+            config.TrainUntilRemembered, config.OnlyTrainIncorrect);
+        if (trainingMode.ValidatesEveryEpoch) {
+            incorrectPositions = FindIncorrectPredictionPositions(
+                model, samples, config.BatchSize, config.PadTokenId, device);
+            var incorrect = CountIncorrectSamples(incorrectPositions);
+            remembered = incorrect == 0;
+            WriteValidationResult(config, remembered, incorrect, 0);
+        }
 
         for (long epoch = 0;
-             (!config.TrainUntilRemembered && epoch < config.Epochs ||
-              config.TrainUntilRemembered && !remembered) &&
+             trainingMode.ShouldContinue(epoch, config.Epochs, remembered) &&
              globalStep < totalSteps;
              ++epoch) {
             if (config.Shuffle)
                 Shuffle(order, random);
 
-            for (var begin = 0; begin < order.Length && globalStep < totalSteps; begin += config.BatchSize) {
-                var end = Math.Min(order.Length, begin + config.BatchSize);
-                var indices = order[begin..end];
-                using var batch = Dataset.MakeBatch(samples, indices, config.PadTokenId);
+            var epochOrder = incorrectPositions is null
+                ? order
+                : SelectSamplesForTraining(order, incorrectPositions);
+            for (var begin = 0; begin < epochOrder.Length && globalStep < totalSteps; begin += config.BatchSize) {
+                var end = Math.Min(epochOrder.Length, begin + config.BatchSize);
+                var indices = epochOrder[begin..end];
+                using var batch = Dataset.MakeBatch(
+                    samples,
+                    indices,
+                    config.PadTokenId,
+                    trainingMode.MasksCorrectPositions ? incorrectPositions : null);
                 double lossValue;
                 using (var scope = torch.NewDisposeScope()) {
                     using var deviceTokens = batch.Tokens.to(device);
@@ -287,7 +335,7 @@ public static class Trainer {
                 accumulatedLoss += lossValue;
                 ++accumulated;
 
-                var epochEnd = end == order.Length;
+                var epochEnd = end == epochOrder.Length;
                 if (accumulated < config.GradientAccumulationSteps && !epochEnd)
                     continue;
 
@@ -316,13 +364,12 @@ public static class Trainer {
                 }
             }
 
-            if (config.TrainUntilRemembered) {
-                var incorrect = CountIncorrectPredictions(
+            if (trainingMode.ValidatesEveryEpoch) {
+                incorrectPositions = FindIncorrectPredictionPositions(
                     model, samples, config.BatchSize, config.PadTokenId, device);
+                var incorrect = CountIncorrectSamples(incorrectPositions);
                 remembered = incorrect == 0;
-                Console.WriteLine(
-                    $"remembered={remembered.ToString().ToLowerInvariant()} " +
-                    $"incorrect={incorrect} epoch={epoch + 1}");
+                WriteValidationResult(config, remembered, incorrect, epoch + 1);
             }
         }
 
@@ -336,7 +383,7 @@ public static class Trainer {
         Console.WriteLine($"adapter saved to {config.OutputDirectory}");
     }
 
-    private static long CountIncorrectPredictions(
+    private static bool[][] FindIncorrectPredictionPositions(
         LlamaForCausalLm model,
         IReadOnlyList<TrainingSample> samples,
         int batchSize,
@@ -345,7 +392,9 @@ public static class Trainer {
         model.eval();
         try {
             using var noGrad = torch.no_grad();
-            long incorrect = 0;
+            var incorrect = samples
+                .Select(sample => new bool[sample.Tokens.Length])
+                .ToArray();
             for (var begin = 0; begin < samples.Count; begin += batchSize) {
                 var end = Math.Min(samples.Count, begin + batchSize);
                 var indices = Enumerable.Range(begin, end - begin).ToArray();
@@ -353,12 +402,28 @@ public static class Trainer {
                 using var deviceTokens = batch.Tokens.to(device);
                 using var deviceAttention = batch.AttentionMask.to(device);
                 using var logits = model.call(deviceTokens, deviceAttention);
-                incorrect += CountIncorrectPredictions(logits, batch);
+                var batchIncorrect = FindIncorrectPredictionPositions(logits, batch);
+                for (var row = 0; row < batchIncorrect.Length; ++row)
+                    Array.Copy(batchIncorrect[row], incorrect[begin + row], batchIncorrect[row].Length);
             }
             return incorrect;
         } finally {
             model.train();
         }
+    }
+
+    private static long CountIncorrectSamples(IEnumerable<bool[]> incorrectPositions) =>
+        incorrectPositions.LongCount(row => row.Any(incorrect => incorrect));
+
+    private static void WriteValidationResult(
+        TrainConfig config,
+        bool remembered,
+        long incorrect,
+        long epoch) {
+        var mode = config.TrainUntilRemembered
+            ? $"remembered={remembered.ToString().ToLowerInvariant()}"
+            : "only-train-incorrect=true";
+        Console.WriteLine($"{mode} incorrect={incorrect} epoch={epoch}");
     }
 
     internal static void AverageAccumulatedGradients(

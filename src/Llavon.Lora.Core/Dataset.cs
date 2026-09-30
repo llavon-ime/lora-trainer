@@ -80,9 +80,13 @@ public static class Dataset {
     public static TrainingBatch MakeBatch(
         IReadOnlyList<TrainingSample> samples,
         IReadOnlyList<int> indices,
-        long padTokenId) {
+        long padTokenId,
+        IReadOnlyList<bool[]>? includedLossPositions = null) {
         if (indices.Count == 0)
             throw new ArgumentException("cannot create an empty batch", nameof(indices));
+        if (includedLossPositions is not null && includedLossPositions.Count != samples.Count)
+            throw new ArgumentException(
+                "loss position masks must match the sample count", nameof(includedLossPositions));
 
         var sequenceLength = indices.Max(index => samples[index].Tokens.Length);
         var tokens = new long[indices.Count, sequenceLength];
@@ -92,7 +96,13 @@ public static class Dataset {
         var candidateMasks = new List<IReadOnlyList<long[]?>>(indices.Count);
 
         for (var row = 0; row < indices.Count; ++row) {
-            var sample = samples[indices[row]];
+            var sampleIndex = indices[row];
+            var sample = samples[sampleIndex];
+            var includedPositions = includedLossPositions?[sampleIndex];
+            if (includedPositions is not null && includedPositions.Length != sample.Tokens.Length)
+                throw new ArgumentException(
+                    "loss position mask must match the sample token count",
+                    nameof(includedLossPositions));
             var masks = new long[]?[sequenceLength];
             for (var position = 0; position < sequenceLength; ++position) {
                 tokens[row, position] = padTokenId;
@@ -101,7 +111,9 @@ public static class Dataset {
                     continue;
                 tokens[row, position] = sample.Tokens[position];
                 labels[row, position] = sample.Labels[position];
-                weights[row, position] = sample.LossWeights[position];
+                weights[row, position] = includedPositions is null || includedPositions[position]
+                    ? sample.LossWeights[position]
+                    : 0;
                 attention[row, position] = sample.AttentionMask[position];
                 masks[position] = sample.CandidateMasks[position];
             }

@@ -109,6 +109,79 @@ public sealed class TrainerTests {
     }
 
     [Fact]
+    public void RememberedSamplesAreSkippedUntilValidationFails() {
+        using var batch = new TrainingBatch {
+            Tokens = torch.tensor(new long[,] { { 0, 1 }, { 0, 2 } }),
+            Labels = torch.tensor(new long[,] { { -100, 1 }, { -100, 2 } }),
+            LossWeights = torch.tensor(new float[,] { { 0, 1 }, { 0, 1 } }),
+            AttentionMask = torch.tensor(new bool[,] { { true, true }, { true, true } }),
+            CandidateMasks = new List<IReadOnlyList<long[]?>> {
+                new long[]?[] { null, [1, 3] },
+                new long[]?[] { null, [2, 4] }
+            }
+        };
+        using var logits = torch.zeros(2, 2, 5, dtype: ScalarType.Float32);
+        logits[0, 0, 1] = 2;
+        logits[0, 0, 3] = 1;
+        logits[1, 0, 2] = 1;
+        logits[1, 0, 4] = 2;
+
+        var incorrect = Trainer.FindIncorrectPredictionPositions(logits, batch);
+        Assert.Equal([1], Trainer.SelectSamplesForTraining([0, 1], incorrect));
+
+        logits[0, 0, 3] = 3;
+        incorrect = Trainer.FindIncorrectPredictionPositions(logits, batch);
+        Assert.Equal([0, 1], Trainer.SelectSamplesForTraining([0, 1], incorrect));
+    }
+
+    [Fact]
+    public void IncorrectOnlyMaskExcludesCorrectTargetsWithinFailedSample() {
+        var samples = new[] {
+            new TrainingSample(
+                [0, 1, 2],
+                [-100, 1, 2],
+                [0, 1, 1],
+                [true, true, true],
+                new long[]?[] { null, [1, 3], [2, 4] })
+        };
+        using var validationBatch = Dataset.MakeBatch(samples, [0], 0);
+        using var logits = torch.zeros(1, 3, 5, dtype: ScalarType.Float32);
+        logits[0, 0, 1] = 2;
+        logits[0, 0, 3] = 1;
+        logits[0, 1, 2] = 1;
+        logits[0, 1, 4] = 2;
+        var incorrect = Trainer.FindIncorrectPredictionPositions(logits, validationBatch);
+
+        using var fullSampleBatch = Dataset.MakeBatch(samples, [0], 0);
+        using var incorrectOnlyBatch = Dataset.MakeBatch(samples, [0], 0, incorrect);
+
+        Assert.Equal(1f, fullSampleBatch.LossWeights[0, 1].item<float>());
+        Assert.Equal(1f, fullSampleBatch.LossWeights[0, 2].item<float>());
+        Assert.Equal(0f, incorrectOnlyBatch.LossWeights[0, 1].item<float>());
+        Assert.Equal(1f, incorrectOnlyBatch.LossWeights[0, 2].item<float>());
+    }
+
+    [Theory]
+    [InlineData(false, false, false, false, false)]
+    [InlineData(true, false, true, true, false)]
+    [InlineData(false, true, true, false, true)]
+    [InlineData(true, true, true, true, true)]
+    public void TrainingModesRemainIndependent(
+        bool trainUntilRemembered,
+        bool onlyTrainIncorrect,
+        bool validates,
+        bool repeats,
+        bool masksCorrectPositions) {
+        var mode = Trainer.ResolveTrainingMode(trainUntilRemembered, onlyTrainIncorrect);
+
+        Assert.Equal(validates, mode.ValidatesEveryEpoch);
+        Assert.Equal(repeats, mode.RepeatsUntilRemembered);
+        Assert.Equal(masksCorrectPositions, mode.MasksCorrectPositions);
+        Assert.Equal(repeats, mode.ShouldContinue(epoch: 3, epochs: 3, remembered: false));
+        Assert.Equal(!repeats, mode.ShouldContinue(epoch: 0, epochs: 3, remembered: true));
+    }
+
+    [Fact]
     public void ConflictCheckOnlyReportsDifferentTargetsForTheSameInput() {
         static TrainingSample Sample(long[] tokens) => new(
             tokens,

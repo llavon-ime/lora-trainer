@@ -117,6 +117,7 @@ public sealed record TrainConfig {
     public long Seed { get; init; } = 42;
     public bool Shuffle { get; init; } = true;
     public bool TrainUntilRemembered { get; init; }
+    public bool OnlyTrainIncorrect { get; init; }
     public string Device { get; init; } = "auto";
     public string DType { get; init; } = "float32";
 
