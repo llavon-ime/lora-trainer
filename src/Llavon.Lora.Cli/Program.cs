@@ -328,7 +328,8 @@ internal sealed class Arguments {
             var key = args[index];
             if (!key.StartsWith("--", StringComparison.Ordinal))
                 throw new ArgumentException($"unexpected positional argument: {key}");
-            if (key is "--no-shuffle" or "--force" or "--json") {
+            if (key is "--no-shuffle" or "--force" or "--json" or
+                "--train-until-remembered" or "--only-train-incorrect") {
                 if (!flags.Add(key))
                     throw new ArgumentException($"duplicate option: {key}");
                 continue;

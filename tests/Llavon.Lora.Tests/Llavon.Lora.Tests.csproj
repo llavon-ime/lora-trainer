@@ -10,6 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Llavon.Lora.Cli\Llavon.Lora.Cli.csproj" />
     <ProjectReference Include="..\..\src\Llavon.Lora.Core\Llavon.Lora.Core.csproj" />
     <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.27.0" />
     <!-- Building with -p:TorchBackend=rocm-linux drops the bundled libtorch so

@@ -19,6 +19,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Llavon.Lora.Tests" />
     <ProjectReference Include="..\Llavon.Lora.Core\Llavon.Lora.Core.csproj" />
     <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.27.0" />
     <PackageReference Include="TorchSharp-cpu" Version="$(TorchSharpVersion)" Condition="'$(TorchBackend)' == 'cpu'" />
