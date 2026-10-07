@@ -299,7 +299,7 @@ public static class Trainer {
             config.TrainUntilRemembered, config.OnlyTrainIncorrect);
         if (trainingMode.ValidatesEveryEpoch) {
             incorrectPositions = FindIncorrectPredictionPositions(
-                model, samples, config.BatchSize, config.PadTokenId, device);
+                model, samples, config.BatchSize, config.PadTokenId, device, 0);
             var incorrect = CountIncorrectSamples(incorrectPositions);
             remembered = incorrect == 0;
             WriteValidationResult(config, remembered, incorrect, 0);
@@ -366,7 +366,7 @@ public static class Trainer {
 
             if (trainingMode.ValidatesEveryEpoch) {
                 incorrectPositions = FindIncorrectPredictionPositions(
-                    model, samples, config.BatchSize, config.PadTokenId, device);
+                    model, samples, config.BatchSize, config.PadTokenId, device, epoch + 1);
                 var incorrect = CountIncorrectSamples(incorrectPositions);
                 remembered = incorrect == 0;
                 WriteValidationResult(config, remembered, incorrect, epoch + 1);
@@ -388,9 +388,11 @@ public static class Trainer {
         IReadOnlyList<TrainingSample> samples,
         int batchSize,
         long padTokenId,
-        Device device) {
+        Device device,
+        long epoch) {
         model.eval();
         try {
+            Console.WriteLine($"validating=0/{samples.Count} epoch={epoch}");
             using var noGrad = torch.no_grad();
             var incorrect = samples
                 .Select(sample => new bool[sample.Tokens.Length])
@@ -405,6 +407,7 @@ public static class Trainer {
                 var batchIncorrect = FindIncorrectPredictionPositions(logits, batch);
                 for (var row = 0; row < batchIncorrect.Length; ++row)
                     Array.Copy(batchIncorrect[row], incorrect[begin + row], batchIncorrect[row].Length);
+                Console.WriteLine($"validating={end}/{samples.Count} epoch={epoch}");
             }
             return incorrect;
         } finally {

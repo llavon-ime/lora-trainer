@@ -222,6 +222,7 @@ internal static class ProgramEntry {
             TrainUntilRemembered = arguments.Flag("--train-until-remembered"),
             OnlyTrainIncorrect = arguments.Flag("--only-train-incorrect")
         };
+        Console.WriteLine("initializing training backend");
         TorchNativeLibraries.Initialize(arguments.Optional("--torch-lib-dir"));
         Trainer.Train(config);
         return 0;

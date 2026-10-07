@@ -1,5 +1,6 @@
 using Llavon.Lora;
 using Llavon.Lora.Integration;
+using System.Diagnostics;
 using System.Text.Json;
 using TorchSharp;
 using Xunit;
@@ -432,7 +433,7 @@ public sealed class TrainerTests {
     }
 
     [Fact]
-    public void TinyLlamaTrainsAndWritesPeftAdapter() {
+    public async Task TinyLlamaTrainsAndWritesPeftAdapter() {
         var root = Path.Combine(Path.GetTempPath(), $"llavon-lora-{Guid.NewGuid():N}");
         var modelDirectory = Path.Combine(root, "model");
         var outputDirectory = Path.Combine(root, "adapter");
@@ -482,6 +483,43 @@ public sealed class TrainerTests {
             var vocabularyPath = Path.Combine(root, "ime_vocab.json");
             File.WriteAllText(vocabularyPath,
                 """{"tokens":["<PAD>","<BOS>","<EOS>","<SEP>","<UNK>","<SP>","<LATIN>","test"],"special_tokens":["<PAD>","<BOS>","<EOS>","<SEP>","<UNK>","<SP>","<LATIN>"]}""");
+
+            // Exercise the redirected CLI used by the service, including the
+            // validation pass before the first optimizer step.
+            var start = new ProcessStartInfo("dotnet") {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            foreach (var argument in new[] {
+                         typeof(Arguments).Assembly.Location, "train",
+                         "--model-config", modelConfigPath, "--model", modelDirectory,
+                         "--train-data", dataPath, "--output-dir", Path.Combine(root, "adapter-incorrect"),
+                         "--target-modules", "q_proj", "--pad-token-id", "0",
+                         "--max-seq-length", "8", "--rank", "2", "--epochs", "1",
+                         "--device", "cpu", "--only-train-incorrect"
+                     })
+                start.ArgumentList.Add(argument);
+            using (var process = Process.Start(start) ?? throw new InvalidOperationException("CLI did not start")) {
+                try {
+                    var stdout = process.StandardOutput.ReadToEndAsync();
+                    var stderr = process.StandardError.ReadToEndAsync();
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    await process.WaitForExitAsync(timeout.Token);
+                    Assert.True(process.ExitCode == 0, await stderr);
+                    var output = await stdout;
+                    Assert.Contains("initializing training backend", output);
+                    Assert.Contains("validating=0/1 epoch=0", output);
+                    Assert.Contains("validating=1/1 epoch=0", output);
+                    Assert.Contains("validating=1/1 epoch=1", output);
+                } finally {
+                    if (!process.HasExited) {
+                        process.Kill(entireProcessTree: true);
+                        await process.WaitForExitAsync();
+                    }
+                }
+            }
 
             Trainer.Train(new TrainConfig {
                 ModelConfigPath = modelConfigPath,
