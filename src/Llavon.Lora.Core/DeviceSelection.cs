@@ -24,8 +24,8 @@ public static class DeviceSelection {
             return cudaAvailable ? Cuda : mpsAvailable ? Mps : Cpu;
         if (requested == Cuda && !cudaAvailable)
             throw new InvalidOperationException(
-                "CUDA was requested but is not available; use a build with the CUDA backend " +
-                "(-p:TorchBackend=cuda-linux or cuda-windows) and a compatible driver");
+                "CUDA was requested but is not available; check the GPU driver, and install the CUDA " +
+                "runtime (llavon-lora runtime install --backend cuda) or use a build with a GPU backend");
         if (requested == Mps && !mpsAvailable)
             throw new InvalidOperationException(
                 "MPS was requested but is not available" + (mpsError is null ? "" : $": {mpsError}"));

@@ -229,7 +229,7 @@ public static class Trainer {
     public static void Train(TrainConfig config) {
         // An alternative libtorch has to be loaded before TorchSharp initialises
         // its own native backend.
-        TorchNativeLibraries.Initialize(null);
+        TorchNativeLibraries.Initialize(null, config.Device);
         var modelConfig = ModelConfig.Load(config.ModelConfigPath);
         config.Validate(modelConfig);
         var samples = Dataset.LoadJsonLines(config.TrainDataPath, modelConfig.VocabSize, config.MaxSequenceLength);

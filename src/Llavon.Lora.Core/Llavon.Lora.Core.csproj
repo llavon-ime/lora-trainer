@@ -13,6 +13,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- TorchRuntimes downloads the GPU libtorch that matches these. -->
+    <AssemblyMetadata Include="TorchSharpVersion" Value="$(TorchSharpVersion)" />
+    <AssemblyMetadata Include="LibTorchVersion" Value="$(LibTorchVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- The unit tests exercise the device selection and native-library
          resolution rules, which are internal to keep the public surface small. -->
     <InternalsVisibleTo Include="Llavon.Lora.Tests" />

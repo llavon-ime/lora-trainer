@@ -14,7 +14,9 @@ internal static class ProgramEntry {
         Usage:
           llavon-lora --version [--json]
 
-          llavon-lora devices [--json]
+          llavon-lora devices [--runtime-root DIR] [--json]
+
+          llavon-lora runtime list|install|remove [--backend cuda] [--runtime-root DIR] [--json]
 
           llavon-lora train --model-config FILE --model FILE_OR_DIR --train-data FILE
               --output-dir DIR --pad-token-id ID --max-seq-length N
@@ -48,11 +50,21 @@ internal static class ProgramEntry {
           --torch-lib-dir DIR              libtorch directory for an alternative
                                            backend, e.g. a ROCm build (or set
                                            LLAVON_LORA_TORCH_LIB)
+          --runtime-root DIR               Where `runtime install` puts GPU runtimes
+                                           (or set LLAVON_LORA_RUNTIME_ROOT)
           --dtype float32|bfloat16         Model compute dtype (default: float32)
           --seed N                         RNG seed (default: 42)
           --no-shuffle                     Preserve JSONL order
           --train-until-remembered          Repeat epochs until every target is predicted
           --only-train-incorrect            Compute loss only for targets that failed validation
+
+        Runtime options:
+          --backend cuda                   GPU runtime to install or remove; the
+                                           libtorch packages TorchSharp uses are
+                                           downloaded from nuget.org and verified
+          --runtime-root DIR               Runtime directory (default: the user's
+                                           local application data)
+          --json                           Write progress and results as JSON lines
 
         Spectral analysis options:
           --top-k N                        Leading singular vectors per matrix (default: 10)
@@ -89,6 +101,9 @@ internal static class ProgramEntry {
                 WriteVersion(args.Length == 2);
                 return 0;
             }
+
+            if (args[0] == "runtime")
+                return RunRuntime(args[1..]);
 
             var arguments = new Arguments(args[1..]);
             return args[0] switch {
@@ -128,6 +143,7 @@ internal static class ProgramEntry {
 
     private static int RunValidate(Arguments arguments) {
         arguments.Allow("--train-data", "--vocab-size", "--max-seq-length");
+        TorchNativeLibraries.Initialize(null);
         var samples = Dataset.LoadJsonLines(
             arguments.Required("--train-data"),
             arguments.Integer("--vocab-size", required: true),
@@ -139,11 +155,13 @@ internal static class ProgramEntry {
     }
 
     private static int RunDevices(Arguments arguments) {
-        arguments.Allow("--json");
-        TorchNativeLibraries.Initialize(null);
+        arguments.Allow("--runtime-root", "--json");
+        TorchNativeLibraries.Initialize(null, DeviceSelection.Auto, arguments.Optional("--runtime-root"));
         var (cuda, mps, mpsError) = DeviceSelection.Availability();
         var directory = TorchNativeLibraries.InitializedDirectory;
-        var libtorch = directory is null ? null : ReadLibTorchBuildVersion(directory);
+        var libtorch = directory is null
+            ? null
+            : ReadLibTorchBuildVersion(directory) ?? TorchRuntimes.Describe(directory);
 
         if (arguments.Flag("--json")) {
             Console.WriteLine(JsonSerializer.Serialize(new {
@@ -187,7 +205,7 @@ internal static class ProgramEntry {
             "--pad-token-id", "--max-seq-length", "--rank", "--alpha", "--dropout", "--batch-size",
             "--gradient-accumulation", "--epochs", "--max-steps", "--learning-rate", "--weight-decay",
             "--warmup-steps", "--max-grad-norm", "--save-every", "--device", "--dtype", "--seed",
-            "--torch-lib-dir", "--no-shuffle", "--train-until-remembered",
+            "--torch-lib-dir", "--runtime-root", "--no-shuffle", "--train-until-remembered",
             "--only-train-incorrect");
 
         var targets = arguments.Required("--target-modules")
@@ -223,9 +241,129 @@ internal static class ProgramEntry {
             OnlyTrainIncorrect = arguments.Flag("--only-train-incorrect")
         };
         Console.WriteLine("initializing training backend");
-        TorchNativeLibraries.Initialize(arguments.Optional("--torch-lib-dir"));
+        TorchNativeLibraries.Initialize(
+            arguments.Optional("--torch-lib-dir"), config.Device, arguments.Optional("--runtime-root"));
         Trainer.Train(config);
         return 0;
+    }
+
+    private static int RunRuntime(string[] args) {
+        if (args.Length == 0)
+            throw new ArgumentException("usage: llavon-lora runtime list|install|remove [options]");
+        var arguments = new Arguments(args[1..]);
+        arguments.Allow("--backend", "--runtime-root", "--json");
+        var root = arguments.Optional("--runtime-root");
+        var json = arguments.Flag("--json");
+        return args[0] switch {
+            "list" => ListRuntimes(root, json),
+            "install" => InstallRuntime(RequireRuntime(arguments), root, json),
+            "remove" => RemoveRuntime(RequireRuntime(arguments), root, json),
+            _ => throw new ArgumentException($"unknown runtime command: {args[0]}")
+        };
+    }
+
+    private static TorchRuntime RequireRuntime(Arguments arguments) {
+        var backend = arguments.Required("--backend");
+        if (backend != TorchRuntimes.Cuda)
+            throw new ArgumentException($"--backend must be {TorchRuntimes.Cuda}");
+        return TorchRuntimes.Find(backend) ?? throw new PlatformNotSupportedException(
+            $"no {backend} runtime is available for {TorchRuntimes.CurrentRid ?? "this platform"}; " +
+            "use --torch-lib-dir with a libtorch for this machine");
+    }
+
+    private static int ListRuntimes(string? root, bool json) {
+        var runtimes = TorchRuntimes.Available.Select(runtime => new {
+            backend = runtime.Backend,
+            name = runtime.Name,
+            rid = runtime.Rid,
+            libtorch = runtime.LibTorchVersion,
+            installed = TorchRuntimes.Locate(runtime, root) is not null,
+            directory = TorchRuntimes.DirectoryOf(runtime, root)
+        }).ToList();
+
+        if (json) {
+            Console.WriteLine(JsonSerializer.Serialize(new { runtimes }));
+            return 0;
+        }
+
+        foreach (var runtime in runtimes)
+            Console.WriteLine(
+                $"{runtime.backend} {runtime.name} installed={(runtime.installed ? "yes" : "no")} " +
+                $"directory={runtime.directory}");
+        return 0;
+    }
+
+    private static int InstallRuntime(TorchRuntime runtime, string? root, bool json) {
+        using var cancellation = new CancellationTokenSource();
+        ConsoleCancelEventHandler cancel = (_, e) => {
+            // Let the installer stop cleanly; finished packages are kept.
+            e.Cancel = true;
+            cancellation.Cancel();
+        };
+        Console.CancelKeyPress += cancel;
+        try {
+            var lastPercent = -1L;
+            var progress = new InlineProgress<TorchRuntimeProgress>(value => {
+                if (json) {
+                    Console.WriteLine(JsonSerializer.Serialize(new {
+                        @event = "progress",
+                        phase = value.Phase,
+                        package = value.Package,
+                        index = value.Index,
+                        count = value.Count,
+                        received = value.Received,
+                        total = value.Total
+                    }));
+                    return;
+                }
+                if (value.Phase == "resolve") {
+                    Console.WriteLine($"resolving packages of {value.Package} from NuGet");
+                    return;
+                }
+                if (value.Phase == "restitch") {
+                    Console.WriteLine("joining fragmented libraries");
+                    return;
+                }
+                var percent = value.Total == 0 ? 100 : value.Received * 100 / value.Total;
+                if (percent == lastPercent)
+                    return;
+                lastPercent = percent;
+                Console.WriteLine($"{percent}% {value.Package} ({value.Index + 1}/{value.Count})");
+            });
+            var directory = TorchRuntimes.InstallAsync(runtime, root, progress, cancellation.Token)
+                .GetAwaiter().GetResult();
+
+            if (json)
+                Console.WriteLine(JsonSerializer.Serialize(new {
+                    @event = "installed",
+                    backend = runtime.Backend,
+                    name = runtime.Name,
+                    directory
+                }));
+            else
+                Console.WriteLine($"installed={directory}");
+            return 0;
+        } catch (OperationCanceledException) when (cancellation.IsCancellationRequested) {
+            Console.Error.WriteLine("error: runtime installation was cancelled; run it again to resume");
+            return 130;
+        } finally {
+            Console.CancelKeyPress -= cancel;
+        }
+    }
+
+    private static int RemoveRuntime(TorchRuntime runtime, string? root, bool json) {
+        var removed = TorchRuntimes.Remove(runtime, root);
+        if (json)
+            Console.WriteLine(JsonSerializer.Serialize(new { @event = "removed", backend = runtime.Backend, removed }));
+        else
+            Console.WriteLine(removed ? $"removed={runtime.Name}" : $"not installed: {runtime.Name}");
+        return 0;
+    }
+
+    // Progress<T> posts to the thread pool, which would let progress lines
+    // arrive after the result line.
+    private sealed class InlineProgress<T>(Action<T> report) : IProgress<T> {
+        public void Report(T value) => report(value);
     }
 
     private static int RunAnalyzeSpectrum(Arguments arguments) {
@@ -292,6 +430,7 @@ internal static class ProgramEntry {
             "--model-config", "--model", "--vocab-file", "--adapter", "--outfile", "--outtype",
             "--quantize", "--quantized-outfile", "--quantization-threads",
             "--expected-outfile-sha256", "--expected-quantized-sha256", "--force");
+        TorchNativeLibraries.Initialize(null);
         var outputType = arguments.Value("--outtype", "f16") switch {
             "f16" => GgufOutputType.Float16,
             "f32" => GgufOutputType.Float32,

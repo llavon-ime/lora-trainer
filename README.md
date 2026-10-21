@@ -20,8 +20,10 @@ trainer 不含斷詞器、詞彙、特殊 token ID、注音表、候選字表或
 - 自動發行版支援 CPU 與 macOS 的 Metal（MPS）GPU 訓練，不需要 CUDA 或
   NVIDIA 驅動程式；macOS 產物內含啟用 MPS 的 LibTorch，因此 `--device mps`
   不需要額外下載；
-- CUDA 版本使用預先建置的 NuGet 二進位檔在本機發佈，建置時不需要 CUDA
-  Toolkit 或 NVCC，執行時需要相容的 NVIDIA 驅動程式；
+- Windows x64 的 CPU 發行版可用 `llavon-lora runtime install --backend cuda`
+  另外下載 CUDA LibTorch（見〈GPU 執行階段〉），不需要 CUDA Toolkit，執行時需要
+  相容的 NVIDIA 驅動程式；也可以用預先建置的 NuGet 二進位檔在本機發佈 CUDA 版本，
+  建置時同樣不需要 CUDA Toolkit 或 NVCC；
 - AMD GPU 使用 ROCm：LibTorch 沒有 Vulkan 訓練後端，而 PyTorch 讓 ROCm 走
   `cuda` 裝置名稱，因此 `--device cuda` 在 ROCm 版本上就是 AMD GPU。建置時會
   下載 PyTorch 官方的 ROCm LibTorch（壓縮檔約 4.9 GB，解開後約 9.4 GB），
@@ -147,6 +149,46 @@ llavon-lora train \
 ROCm）、MPS 與 CPU；`mps` 只在 Apple Silicon 的 macOS 上可用，且目前限定
 `--dtype float32`。`llavon-lora devices [--json]` 會列出可用的後端與目前使用
 的 LibTorch，用來確認 GPU 是否被正確偵測。
+
+## GPU 執行階段
+
+發行版只內附 CPU LibTorch。Windows x64 上的 CUDA LibTorch 由使用者明確執行子命令
+下載，trainer 不會在訓練時自動下載：
+
+```powershell
+llavon-lora runtime list [--json]
+llavon-lora runtime install --backend cuda [--json]
+llavon-lora runtime remove --backend cuda
+```
+
+`install` 不寫死任何套件清單或雜湊：它從 `Directory.Build.props` 的
+`TorchSharpVersion` 找到 `TorchSharp-cuda-windows` 的 nuspec，依其相依性找出
+`libtorch-cuda-*-win-x64`（版本必須等於 `LibTorchVersion`），再從該套件的 nuspec
+列出所有 `-partN` 分割套件（約 2.9 GB），並由 NuGet catalog 取得每個套件的大小與
+SHA-512。下載後逐一比對，只解出 `runtimes/win-x64/native` 與
+`fragments/win-x64/native`，再把分段的大型 DLL 接回並以套件附帶的 SHA-256 驗證。
+這些檢查用來擋下傳輸損毀與錯誤檔案，信任範圍與 `dotnet restore` 相同，不防範
+NuGet 來源本身被竄改。`LLAVON_LORA_NUGET_SOURCE` 可指定其他 NuGet v3 服務索引。
+
+完成的套件會被記錄（含其雜湊），中斷（含 Ctrl+C）後重新執行即可從下一個套件繼續；
+全部完成後才會移到正式目錄。`--json` 會逐行輸出 `progress` 事件，最後輸出
+`installed` 事件。
+
+預設位置是 `%LocalAppData%\llavon-lora\runtimes\libtorch-<版本>-cuda-win-x64`，
+可用 `--runtime-root DIR` 或 `LLAVON_LORA_RUNTIME_ROOT` 改變；`train` 與 `devices`
+也接受同一個選項。目錄名稱包含 LibTorch 版本，因此 trainer 更新時只要 TorchSharp
+版本不變，就能沿用已下載的執行階段。
+
+`--device cuda` 時若沒有安裝執行階段（且這個 build 也沒有內附 GPU LibTorch），
+trainer 會直接報錯並提示安裝指令；`--device auto` 會在已安裝時使用它，否則退回
+內附的 CPU LibTorch；`cpu` 永遠使用內附版本。`--torch-lib-dir` 與
+`LLAVON_LORA_TORCH_LIB` 的優先順序高於已安裝的執行階段。
+
+TorchSharp 依名稱載入 `torch_cpu` 時，.NET 會先以完整路徑探測程式目錄，若那裡有
+CPU 版 DLL 就會和 GPU 版同時載入而失敗。因此 Windows CPU 建置把內附的 LibTorch
+放在 `libtorch\` 子目錄（不列入 deps.json），由 trainer 在 TorchSharp 初始化前
+以完整路徑預先載入 CPU 版或 GPU 執行階段其中之一。ROCm 沒有 NuGet 套件，仍維持
+`--torch-lib-dir` 與 `rocm-linux` 建置的方式。
 
 學習率在選用的線性 warmup 之後保持固定。`--max-steps` 只會停止訓練，不會產生
 cosine decay 週期。

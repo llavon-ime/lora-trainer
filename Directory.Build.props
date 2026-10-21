@@ -4,5 +4,9 @@
          Keep every executable and test project aligned here; 0.107.0's
          published native binding currently has a known ABI mismatch. -->
     <TorchSharpVersion>0.106.0</TorchSharpVersion>
+    <!-- The LibTorch release behind TorchSharpVersion. The Windows CPU build
+         bundles it, and `llavon-lora runtime install` refuses a GPU runtime of
+         any other version. -->
+    <LibTorchVersion>2.10.0</LibTorchVersion>
   </PropertyGroup>
 </Project>

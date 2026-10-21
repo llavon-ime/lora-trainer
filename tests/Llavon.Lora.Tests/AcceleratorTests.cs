@@ -58,10 +58,10 @@ public sealed class AcceleratorTests {
         try {
             Environment.SetEnvironmentVariable(TorchNativeLibraries.DirectoryVariable, directory);
             Assert.Equal(Path.GetFullPath(directory),
-                TorchNativeLibraries.ResolveDirectory(null, application.FullName));
+                TorchNativeLibraries.ResolveDirectoryIn(null, application.FullName));
             // An explicit directory wins over the environment.
             Assert.Equal(Path.GetFullPath(requested),
-                TorchNativeLibraries.ResolveDirectory(requested, application.FullName));
+                TorchNativeLibraries.ResolveDirectoryIn(requested, application.FullName));
         } finally {
             Environment.SetEnvironmentVariable(TorchNativeLibraries.DirectoryVariable, previous);
             Directory.Delete(directory, recursive: true);
@@ -76,12 +76,12 @@ public sealed class AcceleratorTests {
         var missing = Path.Combine(Path.GetTempPath(), $"llavon-missing-{Guid.NewGuid():N}");
         try {
             Assert.Throws<DirectoryNotFoundException>(
-                () => TorchNativeLibraries.ResolveDirectory(missing, application.FullName));
+                () => TorchNativeLibraries.ResolveDirectoryIn(missing, application.FullName));
 
             var empty = Directory.CreateTempSubdirectory("llavon-empty-");
             try {
                 Assert.Throws<FileNotFoundException>(
-                    () => TorchNativeLibraries.ResolveDirectory(empty.FullName, application.FullName));
+                    () => TorchNativeLibraries.ResolveDirectoryIn(empty.FullName, application.FullName));
             } finally {
                 empty.Delete(recursive: true);
             }
@@ -98,15 +98,87 @@ public sealed class AcceleratorTests {
         try {
             // Without bundled libraries the alternative directory is used.
             Assert.Equal(Path.GetFullPath(alternative),
-                TorchNativeLibraries.ResolveDirectory(alternative, clean.FullName));
+                TorchNativeLibraries.ResolveDirectoryIn(alternative, clean.FullName));
             // A build that ships its own libtorch cannot load a second one.
             var error = Assert.Throws<InvalidOperationException>(
-                () => TorchNativeLibraries.ResolveDirectory(alternative, bundled));
+                () => TorchNativeLibraries.ResolveDirectoryIn(alternative, bundled));
             Assert.Contains("rocm-linux", error.Message);
         } finally {
             Directory.Delete(alternative, recursive: true);
             Directory.Delete(bundled, recursive: true);
             clean.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void TheBundledSubdirectoryIsTheFallback() {
+        var application = Directory.CreateTempSubdirectory("llavon-app-");
+        var previous = Environment.GetEnvironmentVariable(TorchNativeLibraries.DirectoryVariable);
+        try {
+            Environment.SetEnvironmentVariable(TorchNativeLibraries.DirectoryVariable, null);
+            Assert.Null(TorchNativeLibraries.ResolveDirectoryIn(null, application.FullName));
+            var bundled = application.CreateSubdirectory(TorchNativeLibraries.BundledDirectoryName).FullName;
+            File.WriteAllText(Path.Combine(bundled, TorchNativeLibraries.CoreLibraryFileName), "");
+            Assert.Equal(bundled, TorchNativeLibraries.ResolveDirectoryIn(null, application.FullName));
+            // The subdirectory is not mapped by full path, so an alternative may replace it.
+            var alternative = CreateFakeLibTorch();
+            try {
+                Assert.Equal(Path.GetFullPath(alternative),
+                    TorchNativeLibraries.ResolveDirectoryIn(alternative, application.FullName));
+            } finally {
+                Directory.Delete(alternative, recursive: true);
+            }
+        } finally {
+            Environment.SetEnvironmentVariable(TorchNativeLibraries.DirectoryVariable, previous);
+            application.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void InstalledCudaRuntimeIsUsedForCudaAndAuto() {
+        var runtime = TorchRuntimes.Find(TorchRuntimes.Cuda);
+        if (runtime is null)
+            return;
+
+        var root = Directory.CreateTempSubdirectory("llavon-runtimes-");
+        var application = Directory.CreateTempSubdirectory("llavon-app-").FullName;
+        var bundled = Path.Combine(application, TorchNativeLibraries.BundledDirectoryName);
+        Directory.CreateDirectory(bundled);
+        File.WriteAllText(Path.Combine(bundled, TorchNativeLibraries.CoreLibraryFileName), "");
+        var previous = Environment.GetEnvironmentVariable(TorchNativeLibraries.DirectoryVariable);
+        try {
+            Environment.SetEnvironmentVariable(TorchNativeLibraries.DirectoryVariable, null);
+
+            // Without an installed runtime only an explicit cuda request fails.
+            var missing = Assert.Throws<InvalidOperationException>(() =>
+                TorchNativeLibraries.ResolveDirectoryIn(null, application, DeviceSelection.Cuda, root.FullName));
+            Assert.Contains("runtime install --backend cuda", missing.Message);
+            Assert.Equal(bundled,
+                TorchNativeLibraries.ResolveDirectoryIn(null, application, DeviceSelection.Auto, root.FullName));
+
+            var installed = TorchRuntimes.DirectoryOf(runtime, root.FullName);
+            Directory.CreateDirectory(installed);
+            File.WriteAllText(Path.Combine(installed, TorchNativeLibraries.CoreLibraryFileName), "");
+            File.WriteAllText(Path.Combine(installed, TorchNativeLibraries.CudaLibraryFileName), "");
+            // Libraries without the completion marker are an interrupted install.
+            Assert.Null(TorchRuntimes.Locate(runtime, root.FullName));
+            TorchRuntimes.WriteMarker(runtime, installed, "libtorch-cuda-12.8-win-x64");
+
+            Assert.Equal(installed,
+                TorchNativeLibraries.ResolveDirectoryIn(null, application, DeviceSelection.Cuda, root.FullName));
+            Assert.Equal(installed,
+                TorchNativeLibraries.ResolveDirectoryIn(null, application, DeviceSelection.Auto, root.FullName));
+            Assert.Equal(bundled,
+                TorchNativeLibraries.ResolveDirectoryIn(null, application, DeviceSelection.Cpu, root.FullName));
+
+            // A build that bundles a GPU libtorch beside the application keeps it.
+            File.WriteAllText(Path.Combine(application, TorchNativeLibraries.CudaLibraryFileName), "");
+            Assert.Equal(bundled,
+                TorchNativeLibraries.ResolveDirectoryIn(null, application, DeviceSelection.Cuda, root.FullName));
+        } finally {
+            Environment.SetEnvironmentVariable(TorchNativeLibraries.DirectoryVariable, previous);
+            root.Delete(recursive: true);
+            Directory.Delete(application, recursive: true);
         }
     }
 
@@ -137,10 +209,12 @@ public sealed class AcceleratorTests {
         // that nothing loads the bundled libtorch first:
         //   LLAVON_LORA_REQUIRE_CUDA=1 LLAVON_LORA_TORCH_LIB=<libtorch dir> \
         //     dotnet test --filter FullyQualifiedName~CudaTrainingCompletesOneStep
+        // On Windows, `llavon-lora runtime install --backend cuda` replaces
+        // LLAVON_LORA_TORCH_LIB.
         if (Environment.GetEnvironmentVariable("LLAVON_LORA_REQUIRE_CUDA") != "1")
             return;
 
-        TorchNativeLibraries.Initialize(null);
+        TorchNativeLibraries.Initialize(null, DeviceSelection.Cuda);
         Assert.True(torch.cuda.is_available(), "this run requires a CUDA or ROCm device");
         using var fixture = new TrainingFixture();
         var (loss, _) = fixture.Train(DeviceSelection.Cuda, "float32");
@@ -164,7 +238,7 @@ public sealed class AcceleratorTests {
     private static string CreateFakeLibTorch() {
         var directory = Path.Combine(Path.GetTempPath(), $"llavon-libtorch-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
-        File.WriteAllText(Path.Combine(directory, TorchNativeLibraries.LibraryFileName("libtorch_cpu")), "");
+        File.WriteAllText(Path.Combine(directory, TorchNativeLibraries.CoreLibraryFileName), "");
         return directory;
     }
 

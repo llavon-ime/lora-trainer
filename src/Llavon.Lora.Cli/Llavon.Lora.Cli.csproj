@@ -16,7 +16,38 @@
          TorchNativeLibraries, because TorchSharp has no ROCm package. -->
     <LlavonRocmLibtorchDirectory Condition="'$(LlavonRocmLibtorchDirectory)' == '' and '$(LLAVON_LORA_LIBTORCH_DIR)' != ''">$(LLAVON_LORA_LIBTORCH_DIR)</LlavonRocmLibtorchDirectory>
     <LlavonRocmLibtorchDirectory Condition="'$(LlavonRocmLibtorchDirectory)' == ''">$(HOME)/.cache/llavon-lora/libtorch-rocm7.0-2.10.0/libtorch/lib</LlavonRocmLibtorchDirectory>
+    <LlavonLibTorchRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</LlavonLibTorchRid>
+    <LlavonLibTorchRid Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</LlavonLibTorchRid>
+    <LlavonLibTorchRid Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">linux-x64</LlavonLibTorchRid>
   </PropertyGroup>
+
+  <!-- The Windows and Linux CPU builds keep their libtorch in a libtorch
+       subdirectory. .NET probes the application directory by full path when
+       TorchSharp loads torch_cpu, so a copy there would be mapped next to a GPU
+       runtime installed with `llavon-lora runtime install`;
+       TorchNativeLibraries preloads one of the two before TorchSharp starts. -->
+  <ItemGroup Condition="'$(TorchBackend)' == 'cpu' and '$(LlavonLibTorchRid)' == 'win-x64'">
+    <PackageReference Include="libtorch-cpu-win-x64" Version="$(LibTorchVersion)" ExcludeAssets="native" GeneratePathProperty="true" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TorchBackend)' == 'cpu' and '$(LlavonLibTorchRid)' == 'win-x64' and '$(Pkglibtorch-cpu-win-x64)' != ''">
+    <None Include="$(Pkglibtorch-cpu-win-x64)/runtimes/win-x64/native/*.dll"
+          Link="libtorch/%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true"
+          Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TorchBackend)' == 'cpu' and '$(LlavonLibTorchRid)' == 'linux-x64'">
+    <PackageReference Include="libtorch-cpu-linux-x64" Version="$(LibTorchVersion)" ExcludeAssets="native" GeneratePathProperty="true" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TorchBackend)' == 'cpu' and '$(LlavonLibTorchRid)' == 'linux-x64' and '$(Pkglibtorch-cpu-linux-x64)' != ''">
+    <None Include="$(Pkglibtorch-cpu-linux-x64)/runtimes/linux-x64/native/*.so*"
+          Link="libtorch/%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true"
+          Visible="false" />
+  </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="Llavon.Lora.Tests" />
