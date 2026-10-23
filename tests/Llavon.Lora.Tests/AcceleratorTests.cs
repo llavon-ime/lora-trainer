@@ -135,6 +135,22 @@ public sealed class AcceleratorTests {
     }
 
     [Fact]
+    public void WindowsSearchPathIsExtendedWithoutReplacingExistingDirectories() {
+        var root = Path.GetPathRoot(Path.GetFullPath("."))!;
+        var torch = Path.Combine(root, "llavon", "libtorch");
+        var llama = Path.Combine(root, "llavon", "runtimes", "win-x64", "native", "avx2");
+        var system = Path.Combine(root, "Windows", "System32");
+        var existing = $"{llama}{Path.PathSeparator}{system}";
+
+        Assert.Equal(
+            $"{torch}{Path.PathSeparator}{existing}",
+            TorchNativeLibraries.PrependWindowsSearchPath(existing, torch));
+        Assert.Equal(
+            existing,
+            TorchNativeLibraries.PrependWindowsSearchPath(existing, llama));
+    }
+
+    [Fact]
     public void InstalledCudaRuntimeIsUsedForCudaAndAuto() {
         var runtime = TorchRuntimes.Find(TorchRuntimes.Cuda);
         if (runtime is null)

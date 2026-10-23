@@ -176,14 +176,24 @@ public static class TorchNativeLibraries {
     // Loading by full path resolves static imports next to each library, and
     // TorchSharp's later loads by name bind to these modules. cuDNN and NVRTC
     // however load their siblings by name at run time, which only searches the
-    // application directory, the system and PATH.
+    // application directory, the system and PATH. Keep the selected directory
+    // in PATH rather than SetDllDirectory: the latter replaces Windows' single
+    // process-wide DLL directory and prevents LLamaSharp from resolving the
+    // ggml libraries beside its dynamically selected AVX backend.
     private static void AddWindowsSearchDirectory(string directory) {
-        if (!SetDllDirectory(directory))
-            throw new InvalidOperationException(
-                $"failed to add {directory} to the DLL search path (error {Marshal.GetLastPInvokeError()})");
+        const string variable = "PATH";
+        var current = Environment.GetEnvironmentVariable(variable);
+        var updated = PrependWindowsSearchPath(current, directory);
+        if (!string.Equals(current, updated, StringComparison.Ordinal))
+            Environment.SetEnvironmentVariable(variable, updated);
     }
 
-    [DllImport("kernel32.dll", EntryPoint = "SetDllDirectoryW", CharSet = CharSet.Unicode, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetDllDirectory(string directory);
+    internal static string PrependWindowsSearchPath(string? searchPath, string directory) {
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+        var entries = (searchPath ?? "")
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (entries.Any(entry => IsSameDirectory(entry, full)))
+            return searchPath ?? "";
+        return string.IsNullOrEmpty(searchPath) ? full : $"{full}{Path.PathSeparator}{searchPath}";
+    }
 }
