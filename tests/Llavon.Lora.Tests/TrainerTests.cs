@@ -58,6 +58,68 @@ public sealed class TrainerTests {
     }
 
     [Fact]
+    public void DisabledCandidateMasksUseFullVocabularyLossAndValidation() {
+        var path = TemporaryPath(".jsonl");
+        try {
+            File.WriteAllText(path,
+                """
+                {"tokens":[0,1,2,0,3,2],"labels":[-100,1,2,-100,3,2],"loss_weights":[1,1,3,9,0,2],"attention_mask":[1,1,1,1,1,0],"candidate_masks":[null,[1,2],[1,2],null,[3],[2]]}
+                {"tokens":[0,3],"loss_weights":[0,2],"candidate_masks":[null,[3]]}
+                """);
+            var samples = Dataset.LoadJsonLines(path, 4, 8, useCandidateMasks: false);
+            Assert.All(samples, sample => Assert.All(sample.CandidateMasks, mask => Assert.Null(mask)));
+            using var batch = Dataset.MakeBatch(samples, [0, 1], 0);
+            using var logits = torch.zeros(2, 6, 4, dtype: ScalarType.Float32);
+            // A token outside every candidate list wins the full-vocabulary argmax.
+            logits[0, 0, 0] = 2;
+            logits[0, 1, 0] = 2;
+            logits[1, 0, 0] = 2;
+            logits.requires_grad_();
+            using var scope = torch.NewDisposeScope();
+            var expected = torch.nn.functional.cross_entropy(
+                torch.stack(new[] { logits[0, 0], logits[0, 1], logits[1, 0] }),
+                torch.tensor(new long[] { 1, 2, 3 }),
+                reduction: torch.nn.Reduction.None);
+            var expectedWeighted = (expected * torch.tensor(new float[] { 1, 3, 2 })).sum() / 6;
+
+            var loss = Trainer.CandidateConstrainedLoss(logits, batch);
+            Assert.Equal(expectedWeighted.item<float>(), loss.item<float>(), 5);
+            Assert.Equal(3, Trainer.CountIncorrectPredictions(logits, batch));
+            var incorrect = Trainer.FindIncorrectPredictionPositions(logits, batch);
+            Assert.Equal(new[] { false, true, true, false, false, false }, incorrect[0]);
+            Assert.Equal(new[] { false, true, false, false, false, false }, incorrect[1]);
+
+            loss.backward();
+            using var gradient = logits.grad;
+            Assert.NotNull(gradient);
+            Assert.True(gradient[0, 0, 0].item<float>() > 0);
+            Assert.Equal(0f, gradient[0, 2..6].abs().sum().item<float>());
+            Assert.Equal(0f, gradient[1, 1..6].abs().sum().item<float>());
+        } finally {
+            File.Delete(path);
+        }
+    }
+
+    [Theory]
+    [InlineData("[null,[2]]")]
+    [InlineData("[null,[99]]")]
+    [InlineData("[null,[]]")]
+    [InlineData("[]")]
+    [InlineData("false")]
+    public void DisabledCandidateMasksSkipCandidateValidation(string masks) {
+        var path = TemporaryPath(".jsonl");
+        try {
+            File.WriteAllText(path,
+                "{\"tokens\":[0,1],\"loss_weights\":[0,1],\"candidate_masks\":" + masks + "}");
+            Assert.Throws<InvalidDataException>(() => Dataset.LoadJsonLines(path, 4, 8));
+            var samples = Dataset.LoadJsonLines(path, 4, 8, useCandidateMasks: false);
+            Assert.All(Assert.Single(samples).CandidateMasks, mask => Assert.Null(mask));
+        } finally {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void DatasetRejectsInvalidFirstToken() {
         var path = TemporaryPath(".jsonl");
         try {
@@ -432,8 +494,10 @@ public sealed class TrainerTests {
         }
     }
 
-    [Fact]
-    public async Task TinyLlamaTrainsAndWritesPeftAdapter() {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task TinyLlamaTrainsAndWritesPeftAdapter(bool useCandidateLoss) {
         var root = Path.Combine(Path.GetTempPath(), $"llavon-lora-{Guid.NewGuid():N}");
         var modelDirectory = Path.Combine(root, "model");
         var outputDirectory = Path.Combine(root, "adapter");
@@ -501,6 +565,8 @@ public sealed class TrainerTests {
                          "--device", "cpu", "--only-train-incorrect"
                      })
                 start.ArgumentList.Add(argument);
+            if (!useCandidateLoss)
+                start.ArgumentList.Add("--no-candidate-loss");
             using (var process = Process.Start(start) ?? throw new InvalidOperationException("CLI did not start")) {
                 try {
                     var stdout = process.StandardOutput.ReadToEndAsync();
@@ -532,6 +598,7 @@ public sealed class TrainerTests {
                 Rank = 2,
                 BatchSize = 1,
                 MaxSteps = 1,
+                UseCandidateLoss = useCandidateLoss,
                 Device = "cpu",
                 DType = "float32"
             });
@@ -539,8 +606,11 @@ public sealed class TrainerTests {
             Assert.True(File.Exists(Path.Combine(outputDirectory, "adapter_config.json")));
             Assert.True(File.Exists(Path.Combine(outputDirectory, "training_state.json")));
             using (var state = JsonDocument.Parse(
-                       File.ReadAllBytes(Path.Combine(outputDirectory, "training_state.json"))))
+                       File.ReadAllBytes(Path.Combine(outputDirectory, "training_state.json")))) {
                 Assert.Equal(2e-4, state.RootElement.GetProperty("learning_rate").GetDouble());
+                var loss = state.RootElement.GetProperty("loss").GetDouble();
+                Assert.Equal(!useCandidateLoss, loss > Math.Log(4));
+            }
             Tensor? firstTrainedWeight = null;
             var adapter = SafeTensors.LoadModel(Path.Combine(outputDirectory, "adapter_model.safetensors"));
             try {
@@ -567,6 +637,7 @@ public sealed class TrainerTests {
                     BatchSize = 1,
                     GradientAccumulationSteps = 4,
                     MaxSteps = 1,
+                    UseCandidateLoss = useCandidateLoss,
                     Device = "cpu",
                     DType = "float32"
                 });
@@ -593,6 +664,7 @@ public sealed class TrainerTests {
                     Rank = 2,
                     BatchSize = 1,
                     MaxSteps = 1,
+                    UseCandidateLoss = useCandidateLoss,
                     Device = "cpu",
                     DType = "float32"
                 });

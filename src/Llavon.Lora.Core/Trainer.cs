@@ -232,7 +232,10 @@ public static class Trainer {
         TorchNativeLibraries.Initialize(null, config.Device);
         var modelConfig = ModelConfig.Load(config.ModelConfigPath);
         config.Validate(modelConfig);
-        var samples = Dataset.LoadJsonLines(config.TrainDataPath, modelConfig.VocabSize, config.MaxSequenceLength);
+        // Drop candidate constraints at load time so loss and validation both
+        // use the full vocabulary when candidate loss is disabled.
+        var samples = Dataset.LoadJsonLines(
+            config.TrainDataPath, modelConfig.VocabSize, config.MaxSequenceLength, config.UseCandidateLoss);
         if (config.TrainUntilRemembered) {
             var conflicts = Dataset.CountConflictingTargets(samples);
             if (conflicts != 0) {

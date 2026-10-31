@@ -23,6 +23,7 @@ internal static class ProgramEntry {
               --target-modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj [options]
 
           llavon-lora validate --train-data FILE --vocab-size N --max-seq-length N
+              [--no-candidate-loss]
 
           llavon-lora analyze-spectrum --model FILE_OR_DIR --adapter DIR [options]
 
@@ -55,6 +56,7 @@ internal static class ProgramEntry {
           --dtype float32|bfloat16         Model compute dtype (default: float32)
           --seed N                         RNG seed (default: 42)
           --no-shuffle                     Preserve JSONL order
+          --no-candidate-loss              Ignore candidate masks; use full-vocabulary cross entropy
           --train-until-remembered          Repeat epochs until every target is predicted
           --only-train-incorrect            Compute loss only for targets that failed validation
 
@@ -142,12 +144,13 @@ internal static class ProgramEntry {
     }
 
     private static int RunValidate(Arguments arguments) {
-        arguments.Allow("--train-data", "--vocab-size", "--max-seq-length");
+        arguments.Allow("--train-data", "--vocab-size", "--max-seq-length", "--no-candidate-loss");
         TorchNativeLibraries.Initialize(null);
         var samples = Dataset.LoadJsonLines(
             arguments.Required("--train-data"),
             arguments.Integer("--vocab-size", required: true),
-            arguments.Integer("--max-seq-length", required: true));
+            arguments.Integer("--max-seq-length", required: true),
+            useCandidateMasks: !arguments.Flag("--no-candidate-loss"));
         var positions = samples.Sum(sample => sample.Tokens.LongLength);
         var constrained = samples.Sum(sample => sample.CandidateMasks.LongCount(mask => mask is not null));
         Console.WriteLine($"valid samples={samples.Count} positions={positions} constrained_positions={constrained}");
@@ -206,7 +209,7 @@ internal static class ProgramEntry {
             "--gradient-accumulation", "--epochs", "--max-steps", "--learning-rate", "--weight-decay",
             "--warmup-steps", "--max-grad-norm", "--save-every", "--device", "--dtype", "--seed",
             "--torch-lib-dir", "--runtime-root", "--no-shuffle", "--train-until-remembered",
-            "--only-train-incorrect");
+            "--only-train-incorrect", "--no-candidate-loss");
 
         var targets = arguments.Required("--target-modules")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -237,6 +240,7 @@ internal static class ProgramEntry {
             DType = arguments.Value("--dtype", "float32"),
             Seed = arguments.Integer("--seed", 42),
             Shuffle = !arguments.Flag("--no-shuffle"),
+            UseCandidateLoss = !arguments.Flag("--no-candidate-loss"),
             TrainUntilRemembered = arguments.Flag("--train-until-remembered"),
             OnlyTrainIncorrect = arguments.Flag("--only-train-incorrect")
         };
@@ -469,7 +473,7 @@ internal sealed class Arguments {
             if (!key.StartsWith("--", StringComparison.Ordinal))
                 throw new ArgumentException($"unexpected positional argument: {key}");
             if (key is "--no-shuffle" or "--force" or "--json" or
-                "--train-until-remembered" or "--only-train-incorrect") {
+                "--train-until-remembered" or "--only-train-incorrect" or "--no-candidate-loss") {
                 if (!flags.Add(key))
                     throw new ArgumentException($"duplicate option: {key}");
                 continue;

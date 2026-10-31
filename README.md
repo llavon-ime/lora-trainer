@@ -6,7 +6,7 @@
 
 trainer 不含斷詞器、詞彙、特殊 token ID、注音表、候選字表或任何語言特定資料。
 
-其 loss 語意與既有的輸入法訓練程式碼一致：
+預設的 loss 語意與既有的輸入法訓練程式碼一致：
 
 - 位置 `p - 1` 的 logits 預測 `labels[p]`；
 - `loss_weights[p] == 0` 會把位置 `p` 排除在 loss 之外；
@@ -51,6 +51,8 @@ Homebrew 安裝 `libomp`。
 `input_ids` 是 `tokens` 的別名，`loss_mask` 是 `loss_weights` 的別名。省略
 `labels` 時會等於 `tokens`；省略 `attention_mask` 時每個位置都會被關注。
 `candidate_masks` 可在一般的全詞彙 causal loss 下省略。
+若資料已包含候選遮罩，可在 `train` 或 `validate` 加上 `--no-candidate-loss`，
+忽略整個 `candidate_masks` 欄位（包含候選遮罩驗證），不必重新產生 JSONL。
 
 上述所有 ID 都是佔位符。產生 JSONL 的處理程序必須提供實際的 ID 與遮罩。
 
@@ -145,6 +147,12 @@ llavon-lora train \
 `q_proj`、`k_proj`、`v_proj`、`o_proj`、`gate_proj`、`up_proj` 與
 `down_proj`。
 
+`--no-candidate-loss` 會停用候選字限制，使用一般 LLM 的全詞彙 causal
+cross entropy：位置 `p - 1` 預測 `labels[p]`，softmax 分母包含完整詞彙表。
+`labels == -100`、`loss_weights` 與 `attention_mask` 仍照常生效，loss 仍為
+有效位置的加權平均。函式庫呼叫端可設定 `TrainConfig.UseCandidateLoss = false`；
+預設為 `true`，保留候選字 loss。
+
 `--device` 接受 `auto`、`cpu`、`cuda` 與 `mps`。`auto` 會依序選擇 CUDA（含
 ROCm）、MPS 與 CPU；`mps` 只在 Apple Silicon 的 macOS 上可用，且目前限定
 `--dtype float32`。`llavon-lora devices [--json]` 會列出可用的後端與目前使用
@@ -205,6 +213,9 @@ cosine decay 週期。
 `--only-train-incorrect` 會在每輪前後檢驗全部資料，並且只讓答錯的字參與下一輪
 loss；答對的字仍會繼續接受檢驗。此選項不會改變 epoch 數量，也不會自動啟用
 `--train-until-remembered`，兩者可分別或同時使用。
+
+搭配 `--no-candidate-loss` 時，上述兩個選項都以全詞彙 argmax 檢驗答案，
+不再以候選字限制判定是否答對。
 
 若省略 `--alpha`，CLI 會使用 `2 * rank`。這遵循 Shuttleworth 等人的頻譜分析
 建議；明確傳入 `--alpha` 仍可覆寫，方便做控制實驗。

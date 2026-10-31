@@ -6,6 +6,7 @@ public sealed class ArgumentsTests {
     [Theory]
     [InlineData("--only-train-incorrect")]
     [InlineData("--train-until-remembered")]
+    [InlineData("--no-candidate-loss")]
     public void TrainingFlagNeedsNoValue(string flag) {
         var arguments = new Arguments([flag]);
 
@@ -16,6 +17,7 @@ public sealed class ArgumentsTests {
     [Theory]
     [InlineData("--only-train-incorrect")]
     [InlineData("--train-until-remembered")]
+    [InlineData("--no-candidate-loss")]
     public void TrainingFlagPreservesFollowingOptions(string flag) {
         var arguments = new Arguments([flag, "--epochs", "5", "--no-shuffle"]);
 
@@ -45,6 +47,7 @@ public sealed class ArgumentsTests {
     [Theory]
     [InlineData("--only-train-incorrect")]
     [InlineData("--train-until-remembered")]
+    [InlineData("--no-candidate-loss")]
     public void DuplicateTrainingFlagsAreRejected(string flag) {
         var exception = Assert.Throws<ArgumentException>(() => new Arguments([flag, flag]));
 

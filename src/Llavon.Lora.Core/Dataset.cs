@@ -55,7 +55,8 @@ public static class Dataset {
     public static IReadOnlyList<TrainingSample> LoadJsonLines(
         string path,
         long vocabularySize,
-        long maximumSequenceLength) {
+        long maximumSequenceLength,
+        bool useCandidateMasks = true) {
         var samples = new List<TrainingSample>();
         using var reader = new StreamReader(path);
         var lineNumber = 0;
@@ -66,7 +67,8 @@ public static class Dataset {
 
             try {
                 using var document = JsonDocument.Parse(line);
-                samples.Add(ParseSample(document.RootElement, lineNumber, vocabularySize, maximumSequenceLength));
+                samples.Add(ParseSample(
+                    document.RootElement, lineNumber, vocabularySize, maximumSequenceLength, useCandidateMasks));
             } catch (JsonException exception) {
                 throw new InvalidDataException($"invalid JSON on line {lineNumber}: {exception.Message}", exception);
             }
@@ -133,7 +135,8 @@ public static class Dataset {
         JsonElement row,
         int lineNumber,
         long vocabularySize,
-        long maximumSequenceLength) {
+        long maximumSequenceLength,
+        bool useCandidateMasks) {
         var tokens = row.TryGetProperty("tokens", out var tokensElement)
             ? ReadLongArray(tokensElement, lineNumber, "tokens")
             : row.TryGetProperty("input_ids", out tokensElement)
@@ -161,7 +164,7 @@ public static class Dataset {
         RequireLength(attention.Length, tokens.Length, lineNumber, "attention_mask");
 
         var candidateMasks = new long[]?[tokens.Length];
-        if (row.TryGetProperty("candidate_masks", out var masksElement)) {
+        if (useCandidateMasks && row.TryGetProperty("candidate_masks", out var masksElement)) {
             if (masksElement.ValueKind != JsonValueKind.Array)
                 throw Error(lineNumber, "'candidate_masks' must be an array");
             RequireLength(masksElement.GetArrayLength(), tokens.Length, lineNumber, "candidate_masks");
